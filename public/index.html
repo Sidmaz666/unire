@@ -1,0 +1,1383 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <title>Remote Mouse</title>
+  <style>
+    * { -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; }
+    html,body { height:100%; margin:0; font-family: Arial, Helvetica, sans-serif; background:#111; color:#eee; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
+    #app { display:flex; flex-direction:column; height:100%; }
+    
+    /* Tabs at the top */
+    .tabs { display:flex; width:100%; background:#0b0b0b; border-bottom:1px solid rgba(255,255,255,0.1); }
+    .tab { flex:1; padding:12px 8px; background:transparent; color:#999; border:none; font-size:14px; touch-action:none; transition:all 0.2s; border-bottom:2px solid transparent; }
+    .tab:active { background:rgba(255,255,255,0.05); }
+    .tab.active { color:#fff; border-bottom-color:#0f0; background:rgba(255,255,255,0.02); }
+    
+    #content { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+    #tab-keyboard { display:flex; height:100%; width:100%; flex-direction:column; }
+    #tab-info { display:none; height:100%; overflow-y:auto; }
+    #pad { flex:1; display:flex; justify-content:center; align-items:center; position:relative; min-height:0; }
+    #trackpad { flex:1; display:flex; justify-content:center; align-items:center; margin:10px; background:rgba(255,255,255,0.03); border-radius:14px; min-height:200px; touch-action:none; position:relative; transition: background 0.1s ease; }
+    #trackpad.scrolling { background: linear-gradient(to right, rgba(255,255,255,0.03), rgba(0,255,255,0.15)) !important; }
+    #touchArea {
+      width:92%; height:80%; border-radius:14px; background:rgba(255,255,255,0.03);
+      touch-action:none; display:flex; align-items:center; justify-content:center; color:#999;
+      position:relative;
+    }
+    /* Mobile-friendly horizontal keyboard - bottom aligned */
+    #keyboardMode { 
+      width:100%; 
+      background:#0f0f0f; 
+      padding:10px 4px 8px 4px; 
+      box-shadow: 0 -4px 20px rgba(0,0,0,0.3);
+      border-radius: 12px 12px 0 0;
+      box-sizing: border-box;
+      margin-top: auto;
+    }
+    #virtualKeyboard { 
+      display:flex; 
+      flex-direction:column; 
+      gap:4px; 
+      width:100%;
+      box-sizing: border-box;
+    }
+    .keyboard-row { 
+      display:grid; 
+      gap:3px;
+      width:100%;
+      box-sizing: border-box;
+    }
+    .key { 
+      padding:10px 4px; 
+      background:#1a1a1a; 
+      color:#fff; 
+      border:1px solid #333; 
+      border-radius:8px; 
+      font-size:14px; 
+      touch-action:none; 
+      min-height:48px; 
+      display:flex; 
+      align-items:center; 
+      justify-content:center;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      transition: all 0.1s;
+      box-sizing: border-box;
+    }
+    .key:active { 
+      background:#2a2a2a; 
+      transform: scale(0.95); 
+      box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    }
+    .key.fn { font-size:11px; padding:8px 2px; min-height:36px; box-sizing: border-box; }
+    .key.windows { font-size:20px; }
+    .key-desktop { font-size:11px; padding:8px 2px; min-height:32px; background:#0d0d0d; box-sizing: border-box; }
+    .key.active { background:#2a5a2a !important; border-color:#0f0 !important; }
+    /* Outline variant (no background) */
+    .key-outline { background:transparent; border:1px solid #444; color:#ddd; }
+    .key-outline:active { background:rgba(255,255,255,0.05); }
+    /* info button uses same outline style as others (no green accent) */
+    .key .btn-content { display:inline-flex; align-items:center; gap:8px; }
+    .key .icon { width:18px; height:18px; display:inline-block; }
+    .key.key-info .icon { width:18px; height:18px; }
+    .key.pressed { background:rgba(255,255,255,0.06) !important; transform:scale(0.97); border-color:#666; }
+    
+    /* Desktop keys - top strips */
+    .keyboard-row.desktop-strip1 { grid-template-columns: repeat(8, 1fr); }
+    .keyboard-row.desktop-strip2 { grid-template-columns: repeat(7, 1fr); }
+    
+    /* Info tab styling */
+    .info-content { padding:20px; max-width:600px; margin:0 auto; }
+    .info-section { margin-bottom:24px; }
+    .info-section h3 { color:#0f0; margin-bottom:12px; font-size:16px; }
+    .info-section p { color:#aaa; margin:8px 0; font-size:14px; line-height:1.6; }
+    .info-section ul { margin:8px 0; padding-left:20px; color:#aaa; }
+    .info-section li { margin:6px 0; font-size:14px; }
+    /* QWERTY layout rows */
+    .keyboard-row.numbers { grid-template-columns: repeat(10, 1fr) repeat(2, 1fr) 1.5fr; } /* 1-0 + - = + Backspace (13 total) */
+    .keyboard-row.top { grid-template-columns: repeat(10, 1fr); } /* q-p (10 keys) */
+    .keyboard-row.middle { grid-template-columns: repeat(9, 1fr); } /* a-l (9 keys) */
+    .keyboard-row.bottom { grid-template-columns: 1.5fr repeat(9, 1fr) 1.5fr; } /* Caps + z..m + ,./ (11 keys) */
+    .keyboard-row.space { grid-template-columns: 1fr 2.5fr 1fr 1fr 1fr; } /* 5 keys: ?123, Space (wide), ., Enter, Windows */
+    /* Horizontally scrollable control row as carousel */
+    .controls-wrapper { position:relative; padding:0 44px; }
+    .controls-scroll { display:flex; gap:8px; overflow-x:auto; padding:4px 6px; -webkit-overflow-scrolling: touch; scroll-behavior:smooth; }
+    /* hide scrollbars across browsers */
+    .controls-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+    .controls-scroll::-webkit-scrollbar { display:none; }
+    .controls-scroll .key { flex:0 0 calc((100% - 16px)/3); white-space:nowrap; }
+    .carousel-arrow { position:absolute; top:50%; transform:translateY(-50%); width:32px; height:32px; border-radius:16px; background:rgba(0,0,0,0.4); border:1px solid #333; color:#ddd; display:flex; align-items:center; justify-content:center; z-index:2; }
+    .carousel-arrow.left { left:6px; }
+    .carousel-arrow.right { right:6px; }
+    .carousel-arrow:active { background:rgba(255,255,255,0.1); }
+    #cursorIndicator {
+      position:absolute; width:10px; height:10px; background:#0f0; 
+      border-radius:50%; pointer-events:none; opacity:0.7; display:none;
+      box-shadow: 0 0 8px rgba(0,255,0,0.6);
+      transform: translate(-50%, -50%);
+    }
+    .drag-badge {
+      position:absolute; top:8px; right:8px; background:#0a3; color:#fff; 
+      border:1px solid rgba(255,255,255,0.2); padding:4px 8px; border-radius:999px;
+      font-size:12px; letter-spacing:0.3px; box-shadow:0 2px 6px rgba(0,0,0,0.3);
+      display:none; z-index:3;
+    }
+    #touchArea.scrolling {
+      background: linear-gradient(to right, rgba(255,255,255,0.03), rgba(0,255,255,0.15)) !important;
+      transition: background 0.1s ease;
+    }
+    #controls { padding:10px; display:flex; gap:10px; justify-content:center; align-items:center; }
+    button { padding:10px 12px; border-radius:8px; border:0; background:#222; color:#fff; }
+    #status { font-size:13px; color:#8f8; margin-left:10px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <!-- Tabs removed -->
+
+    <!-- Content Area -->
+    <div id="content">
+      <!-- Remote Tab (formerly Keyboard) -->
+
+      <!-- Keyboard Tab -->
+      <div id="tab-keyboard">
+        <div id="trackpad">
+          <div style="text-align:center; color:#999; font-size:14px;">
+            Touch and drag here to move mouse
+            <div id="trackpadCursor" style="position:absolute; width:10px; height:10px; background:#0f0; border-radius:50%; pointer-events:none; opacity:0.7; display:none; box-shadow: 0 0 8px rgba(0,255,0,0.6); transform: translate(-50%, -50%);"></div>
+          </div>
+        </div>
+        <div id="keyboardMode">
+          <div id="virtualKeyboard"></div>
+        </div>
+      </div>
+
+    <!-- Fullscreen Info Modal -->
+    <div id="infoModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:9999;">
+      <div style="position:absolute; inset:20px; background:#0f0f0f; border:1px solid #333; border-radius:12px; overflow:auto;">
+        <div style="position:sticky; top:0; background:#0f0f0f; padding:10px; border-bottom:1px solid #222; display:flex; justify-content:space-between; align-items:center;">
+          <strong>Info</strong>
+          <button id="infoCloseBtn" class="key" style="min-height:auto; padding:8px 12px;">Close</button>
+        </div>
+        <div id="infoModalContent" style="padding:16px;"></div>
+        </div>
+      </div>
+
+      <!-- Info Tab -->
+      <div id="tab-info">
+        <div class="info-content">
+          <div class="info-section">
+            <h3>Mouse Control</h3>
+            <p><strong>Move:</strong> Drag inside the trackpad area to move the mouse cursor</p>
+            <p><strong>Left Click:</strong> Tap (quick touch and release) on the trackpad</p>
+            <p><strong>Right Click:</strong> Use two fingers at once on the trackpad</p>
+            <p><strong>Drag to Select:</strong> Double tap the trackpad, then hold for 500-800ms on the second tap. When the "Drag Select" badge appears, drag to select text or items. Release to complete selection.</p>
+            <p><strong>Scroll:</strong> Touch and drag in the right 40px edge to scroll</p>
+            <p><strong>Control Buttons:</strong> Use the Left/Right click buttons in the carousel for quick mouse actions</p>
+          </div>
+
+          <div class="info-section">
+            <h3>Keyboard Control</h3>
+            <p><strong>Full Keyboard:</strong> All standard keys including letters, numbers, and special characters</p>
+            <ul>
+              <li><strong>Function Keys:</strong> F1-F12 for shortcuts</li>
+              <li><strong>Windows Key (⊞):</strong> Opens start menu</li>
+              <li><strong>Modifiers:</strong> Ctrl, Alt, Shift for keyboard shortcuts</li>
+              <li><strong>Arrow Keys:</strong> Navigation</li>
+              <li><strong>Tab (⇥):</strong> Indent/navigate</li>
+              <li><strong>Esc:</strong> Cancel/close</li>
+              <li><strong>Enter (↵):</strong> Submit</li>
+              <li><strong>Backspace (⌫):</strong> Delete</li>
+              <li><strong>Space (␣):</strong> Space character</li>
+            </ul>
+            <p>For best experience, rotate your device to landscape mode when using the keyboard.</p>
+          </div>
+
+          <div class="info-section">
+            <h3>Gestures</h3>
+            <ul>
+              <li><strong>Scroll Zone:</strong> The right 40px edge is dedicated to scrolling</li>
+              <li><strong>Drag to Select:</strong> Double tap + hold 500-800ms, then drag. A "Drag Select" badge appears when active.</li>
+              <li><strong>Haptic Feedback:</strong> Device vibrates when entering scroll mode or activating drag-to-select</li>
+              <li><strong>Visual Feedback:</strong> Green cursor indicator shows your finger position</li>
+              <li><strong>Gradient Effect:</strong> Right edge shows gradient when scrolling</li>
+            </ul>
+          </div>
+
+          <div class="info-section">
+            <h3>Control Carousel</h3>
+            <p>Swipe horizontally through the control buttons at the top:</p>
+            <ul>
+              <li><strong>Left/Right Click:</strong> Quick mouse button actions</li>
+              <li><strong>Info:</strong> Open this information page</li>
+              <li><strong>Volume Up/Down:</strong> Adjust system volume</li>
+              <li><strong>Brightness Up/Down:</strong> Adjust screen brightness</li>
+              <li><strong>Browser:</strong> Open default browser</li>
+              <li><strong>YouTube:</strong> Open YouTube in browser</li>
+            </ul>
+            <p>Use the arrow buttons or swipe to navigate the carousel.</p>
+          </div>
+
+          <div class="info-section">
+            <h3>Status</h3>
+            <p id="info-status"><strong>Connection:</strong> <span id="connection-status">Checking...</span></p>
+            <p id="info-ip"><strong>Server:</strong> Connecting...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    (function(){
+      const statusEl = document.getElementById('status');
+      const touchArea = document.getElementById('touchArea');
+      const cursorIndicator = document.getElementById('cursorIndicator');
+      const btnLeft = document.getElementById('btn-left');
+      const btnRight = document.getElementById('btn-right');
+      const btnLogout = document.getElementById('btn-logout');
+      const keyboardMode = document.getElementById('keyboardMode');
+      const virtualKeyboard = document.getElementById('virtualKeyboard');
+      // Tabs removed; show Remote by default
+
+      // first check session
+      fetch('/api/session').then(r => r.json()).then(j => {
+        if (!j.authenticated) {
+          document.body.innerHTML = '<div style="padding:20px;font-family:Arial">Not authenticated. Please scan the QR on the desktop and sign in.</div>';
+          return;
+        }
+        
+        // Info modal close
+        const infoCloseBtn = document.getElementById('infoCloseBtn');
+        const infoModal = document.getElementById('infoModal');
+        if (infoCloseBtn && infoModal) {
+          infoCloseBtn.addEventListener('click', () => { infoModal.style.display = 'none'; });
+          infoModal.addEventListener('click', (e) => {
+            if (e.target === infoModal) infoModal.style.display = 'none';
+          });
+        }
+        initSocket();
+      });
+
+      let socket;
+      let active = false;
+      let lastX = null;
+      let lastY = null;
+      let totalDistance = 0;
+      let pointers = new Set();
+      let sensitivity = 2.5; // Trackpad-like sensitivity
+      let isScrolling = false;
+      let scrollStartY = null;
+      let symbolMode = false;
+      let capsMode = false;
+      let keyboardCollapsed = false;
+      let modifierKeys = { ctrl: false, alt: false, shift: false, windows: false };
+      let isDragging = false;
+      let dragStartX = null;
+      let dragStartY = null;
+      let lastTapTime = 0;
+      let lastTapX = 0;
+      let lastTapY = 0;
+      let isDragModeEnabled = false;
+      let dragHoldTimer = null;
+
+      function initSocket(){
+        socket = io();
+
+        socket.on('connect', () => {
+          statusEl.textContent = 'Connected';
+          const connStatus = document.getElementById('connection-status');
+          const infoIP = document.getElementById('info-ip');
+          if (connStatus) connStatus.textContent = 'Connected';
+          if (infoIP) infoIP.textContent = `Server: ${window.location.hostname}:${window.location.port || 8000}`;
+          // Also update modal copy if open
+          const modalContent = document.getElementById('infoModalContent');
+          if (modalContent) {
+            const cs = modalContent.querySelector('#connection-status');
+            const ip = modalContent.querySelector('#info-ip');
+            if (cs) cs.textContent = 'Connected';
+            if (ip) ip.textContent = `Server: ${window.location.hostname}:${window.location.port || 8000}`;
+          }
+        });
+        socket.on('connect_error', (err) => {
+          statusEl.textContent = 'Connect error';
+          const connStatus = document.getElementById('connection-status');
+          if (connStatus) connStatus.textContent = 'Error';
+          const modalContent = document.getElementById('infoModalContent');
+          if (modalContent) {
+            const cs = modalContent.querySelector('#connection-status');
+            if (cs) cs.textContent = 'Error';
+          }
+        });
+        socket.on('disconnect', () => {
+          statusEl.textContent = 'Disconnected';
+          const connStatus = document.getElementById('connection-status');
+          if (connStatus) connStatus.textContent = 'Disconnected';
+          const modalContent = document.getElementById('infoModalContent');
+          if (modalContent) {
+            const cs = modalContent.querySelector('#connection-status');
+            if (cs) cs.textContent = 'Disconnected';
+          }
+        });
+
+        if (touchArea) {
+        touchArea.addEventListener('pointerdown', (ev) => {
+          ev.preventDefault();
+          touchArea.setPointerCapture(ev.pointerId);
+          
+          pointers.add(ev.pointerId);
+          
+          if (pointers.size >= 2) {
+            socket.emit('click', { button: 'right' });
+            pointers.clear();
+            return;
+          }
+          
+          // Detect double-tap for drag-to-select mode
+          const currentTime = Date.now();
+          const timeDiff = currentTime - lastTapTime;
+          const distanceFromLastTap = Math.sqrt(
+            Math.pow(ev.clientX - lastTapX, 2) + 
+            Math.pow(ev.clientY - lastTapY, 2)
+          );
+          
+          const doubleTapped = (timeDiff < 300 && distanceFromLastTap < 50);
+          
+          // Update last tap info
+          lastTapTime = currentTime;
+          lastTapX = ev.clientX;
+          lastTapY = ev.clientY;
+          
+          active = true;
+          totalDistance = 0;
+          lastX = ev.clientX;
+          lastY = ev.clientY;
+          isDragging = false;
+          dragStartX = ev.clientX;
+          dragStartY = ev.clientY;
+          
+          // Check if starting in scroll zone (right 40px)
+          const rect = touchArea.getBoundingClientRect();
+          const touchX = ev.clientX - rect.left;
+          const trackpadWidth = rect.width;
+          const scrollZoneWidth = 40;
+          const isScrollZone = touchX > (trackpadWidth - scrollZoneWidth);
+          
+          if (isScrollZone) {
+            // Start in scroll mode immediately
+            isScrolling = true;
+            scrollStartY = ev.clientY;
+            touchArea.classList.add('scrolling');
+            cursorIndicator.style.display = 'none';
+            
+            // Haptic feedback
+            if (navigator.vibrate) {
+              navigator.vibrate(20);
+            }
+          } else {
+            // Mouse mode
+            isScrolling = false;
+            cursorIndicator.style.left = touchX + 'px';
+            cursorIndicator.style.top = (ev.clientY - rect.top) + 'px';
+            cursorIndicator.style.display = 'block';
+
+            // If double-tapped, require a short hold to enter drag mode
+            if (doubleTapped) {
+              if (dragHoldTimer) { clearTimeout(dragHoldTimer); dragHoldTimer = null; }
+              dragHoldTimer = setTimeout(() => {
+                isDragModeEnabled = true;
+                isDragging = true;
+                if (!socket.disconnected) {
+                  socket.emit('mousedown', { button: 'left' });
+                }
+                // Show drag badge
+                let badge = touchArea.querySelector('.drag-badge');
+                if (!badge) {
+                    badge = document.createElement('div');
+                    badge.className = 'drag-badge';
+                    badge.textContent = 'Drag Select';
+                    touchArea.appendChild(badge);
+                }
+                badge.style.display = 'inline-block';
+                if (navigator.vibrate) navigator.vibrate([20,20,20]);
+                dragHoldTimer = null;
+              }, 600); // 500-800ms hold
+            }
+          }
+        });
+
+        touchArea.addEventListener('pointermove', (ev) => {
+          if (!active) return;
+          ev.preventDefault();
+          
+          const rect = touchArea.getBoundingClientRect();
+          const touchX = ev.clientX - rect.left;
+          const touchY = ev.clientY - rect.top;
+          const trackpadWidth = rect.width;
+          const scrollZoneWidth = 40; // 40px right edge for scrolling
+          const isRightEdge = touchX > (trackpadWidth - scrollZoneWidth);
+          
+          const dx = (ev.clientX - lastX) * sensitivity;
+          const dy = (ev.clientY - lastY) * sensitivity;
+          lastX = ev.clientX;
+          lastY = ev.clientY;
+
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          totalDistance += distance;
+
+          // If user moves before hold completes, cancel pending drag activation
+          if (dragHoldTimer && (Math.abs(ev.clientX - dragStartX) > 8 || Math.abs(ev.clientY - dragStartY) > 8)) {
+            clearTimeout(dragHoldTimer); dragHoldTimer = null;
+          }
+
+          // PRIORITY: If dragging, move mouse with button held down (skip everything else)
+          if (isDragging) {
+            cursorIndicator.style.left = touchX + 'px';
+            cursorIndicator.style.top = touchY + 'px';
+            if (!socket || socket.disconnected) return;
+            let sendDx = Math.round(dx);
+            let sendDy = Math.round(dy);
+            if (sendDx === 0 && dx !== 0) sendDx = dx > 0 ? 1 : -1;
+            if (sendDy === 0 && dy !== 0) sendDy = dy > 0 ? 1 : -1;
+            if (sendDx !== 0 || sendDy !== 0) {
+              socket.emit('move', { dx: sendDx, dy: sendDy });
+            }
+            return; // Exit early - don't check for scroll or other modes
+          }
+          
+          // If drag mode enabled but not yet dragging, start on any movement
+          if (!isDragging && !isScrolling && isDragModeEnabled && dragStartX !== null && dragStartY !== null) {
+            const dragDistance = Math.sqrt(
+              Math.pow(ev.clientX - dragStartX, 2) + 
+              Math.pow(ev.clientY - dragStartY, 2)
+            );
+            if (dragDistance > 2) {
+              // Start dragging - press mouse button down
+              isDragging = true;
+              if (!socket || socket.disconnected) return;
+              socket.emit('mousedown', { button: 'left' });
+              // Move cursor immediately
+              cursorIndicator.style.left = touchX + 'px';
+              cursorIndicator.style.top = touchY + 'px';
+              let sendDx = Math.round(dx);
+              let sendDy = Math.round(dy);
+              if (sendDx === 0 && dx !== 0) sendDx = dx > 0 ? 1 : -1;
+              if (sendDy === 0 && dy !== 0) sendDy = dy > 0 ? 1 : -1;
+              if (sendDx !== 0 || sendDy !== 0) {
+                socket.emit('move', { dx: sendDx, dy: sendDy });
+              }
+              return;
+            }
+          }
+
+          // If already in scroll mode, stay in scroll mode
+          if (isScrolling) {
+            // Send scroll events - intensity based on movement speed
+            if (!socket || socket.disconnected) return;
+            
+            // Calculate scroll delta based on vertical movement
+            // dy > 0 (dragging down) → positive delta → scroll down
+            // dy < 0 (dragging up) → negative delta → scroll up
+            const scrollDelta = Math.round(dy * sensitivity * 4); // Amplify scroll
+            
+            if (Math.abs(scrollDelta) >= 2) {
+              socket.emit('scroll', { delta: scrollDelta });
+            }
+            
+            return; // Don't move mouse when scrolling
+          }
+          
+          // Check if entering scroll mode at right edge
+          if (!isDragging && isRightEdge) {
+            // Switch to scroll mode
+            isScrolling = true;
+            scrollStartY = ev.clientY;
+            touchArea.classList.add('scrolling');
+            cursorIndicator.style.display = 'none';
+            
+            // Haptic feedback when entering scroll mode
+            if (navigator.vibrate) {
+              navigator.vibrate(20);
+            }
+            
+            // Send initial scroll
+            if (!socket || socket.disconnected) return;
+            const scrollDelta = Math.round(dy * sensitivity * 4);
+            if (Math.abs(scrollDelta) >= 2) {
+              socket.emit('scroll', { delta: scrollDelta });
+            }
+            
+            return;
+          }
+          
+          // MOUSE MODE - move cursor (do not enter scroll while dragging)
+          cursorIndicator.style.left = touchX + 'px';
+          cursorIndicator.style.top = touchY + 'px';
+
+          if (!socket || socket.disconnected) return;
+          
+          let sendDx = Math.round(dx);
+          let sendDy = Math.round(dy);
+          
+          if (sendDx === 0 && dx !== 0) sendDx = dx > 0 ? 1 : -1;
+          if (sendDy === 0 && dy !== 0) sendDy = dy > 0 ? 1 : -1;
+          
+          if (sendDx !== 0 || sendDy !== 0) {
+            socket.emit('move', { dx: sendDx, dy: sendDy });
+          }
+        });
+
+        touchArea.addEventListener('pointerup', (ev) => {
+          active = false;
+          
+          // If dragging, release mouse button
+          if (isDragging) {
+            if (!socket.disconnected) {
+              socket.emit('mouseup', { button: 'left' });
+            }
+            isDragging = false;
+            // Disable drag mode after releasing
+            isDragModeEnabled = false;
+            const badge = touchArea.querySelector('.drag-badge');
+            if (badge) badge.style.display = 'none';
+          }
+          if (dragHoldTimer) { clearTimeout(dragHoldTimer); dragHoldTimer = null; }
+          
+          isScrolling = false;
+          touchArea.classList.remove('scrolling');
+          cursorIndicator.style.display = 'none';
+          
+          if (totalDistance < 15 && pointers.size === 1 && !isDragging) {
+            socket.emit('click', { button: 'left' });
+          }
+          
+          totalDistance = 0;
+          lastX = null;
+          lastY = null;
+          dragStartX = null;
+          dragStartY = null;
+          pointers.delete(ev.pointerId);
+        });
+        
+        touchArea.addEventListener('pointercancel', (ev) => {
+          active = false;
+          
+          // If dragging, release mouse button
+          if (isDragging) {
+            if (!socket.disconnected) {
+              socket.emit('mouseup', { button: 'left' });
+            }
+            isDragging = false;
+            // Disable drag mode
+            isDragModeEnabled = false;
+            const badge = touchArea.querySelector('.drag-badge');
+            if (badge) badge.style.display = 'none';
+          }
+          if (dragHoldTimer) { clearTimeout(dragHoldTimer); dragHoldTimer = null; }
+          
+          isScrolling = false;
+          touchArea.classList.remove('scrolling');
+          cursorIndicator.style.display = 'none';
+          totalDistance = 0;
+          lastX = null;
+          lastY = null;
+          dragStartX = null;
+          dragStartY = null;
+          pointers.delete(ev.pointerId);
+        });
+
+        btnLeft && btnLeft.addEventListener('click', () => {
+          socket.emit('click', { button: 'left' });
+        });
+        btnRight && btnRight.addEventListener('click', () => {
+          socket.emit('click', { button: 'right' });
+        });
+        if (btnLogout) {
+        btnLogout.addEventListener('click', async () => {
+          await fetch('/api/logout', { method: 'POST' });
+          localStorage.removeItem('remote_sid');
+          location.reload();
+        });
+        }
+
+        }
+
+        localStorage.setItem('remote_sid', '1');
+
+        // Initialize keyboard
+        buildKeyboard();
+        
+        // Initialize keyboard tab trackpad - full featured like mouse tab
+        const trackpad = document.getElementById('trackpad');
+        if (trackpad) {
+          let trackpadActive = false;
+          let trackpadLastX = null;
+          let trackpadLastY = null;
+          let trackpadTotalDistance = 0;
+          let trackpadPointers = new Set();
+          let trackpadIsScrolling = false;
+          let trackpadScrollStartY = null;
+          let trackpadIsDragging = false;
+          let trackpadDragStartX = null;
+          let trackpadDragStartY = null;
+          let trackpadLastTapTime = 0;
+          let trackpadLastTapX = 0;
+          let trackpadLastTapY = 0;
+          let trackpadIsDragModeEnabled = false;
+          let trackpadDragHoldTimer = null;
+          
+          trackpad.addEventListener('pointerdown', (ev) => {
+            ev.preventDefault();
+            trackpad.setPointerCapture(ev.pointerId);
+            
+            trackpadPointers.add(ev.pointerId);
+            
+            if (trackpadPointers.size >= 2) {
+              socket.emit('click', { button: 'right' });
+              trackpadPointers.clear();
+              return;
+            }
+            
+            // Detect double-tap for drag-to-select mode
+            const currentTime = Date.now();
+            const timeDiff = currentTime - trackpadLastTapTime;
+            const distanceFromLastTap = Math.sqrt(
+              Math.pow(ev.clientX - trackpadLastTapX, 2) + 
+              Math.pow(ev.clientY - trackpadLastTapY, 2)
+            );
+            
+            if (timeDiff < 300 && distanceFromLastTap < 50) {
+              // Double tap detected - require small hold to start dragging
+              if (trackpadDragHoldTimer) { clearTimeout(trackpadDragHoldTimer); trackpadDragHoldTimer = null; }
+              trackpadDragHoldTimer = setTimeout(() => {
+                trackpadIsDragModeEnabled = true;
+                trackpadIsDragging = true;
+                if (!socket.disconnected) socket.emit('mousedown', { button: 'left' });
+                let badge = trackpad.querySelector('.drag-badge');
+                if (!badge) { badge = document.createElement('div'); badge.className = 'drag-badge'; badge.textContent = 'Drag Select'; trackpad.appendChild(badge); }
+                badge.style.display = 'inline-block';
+                if (navigator.vibrate) navigator.vibrate([20,20,20]);
+                trackpadDragHoldTimer = null;
+              }, 600);
+            }
+            
+            // Update last tap info
+            trackpadLastTapTime = currentTime;
+            trackpadLastTapX = ev.clientX;
+            trackpadLastTapY = ev.clientY;
+            
+            trackpadActive = true;
+            trackpadTotalDistance = 0;
+            trackpadLastX = ev.clientX;
+            trackpadLastY = ev.clientY;
+            
+            // Check if starting in scroll zone (right 40px)
+            const rect = trackpad.getBoundingClientRect();
+            const touchX = ev.clientX - rect.left;
+            const trackpadWidth = rect.width;
+            const scrollZoneWidth = 40;
+            const isScrollZone = touchX > (trackpadWidth - scrollZoneWidth);
+            
+            const trackpadCursor = document.getElementById('trackpadCursor');
+            
+            if (isScrollZone) {
+              // Start in scroll mode immediately
+              trackpadIsScrolling = true;
+              trackpadScrollStartY = ev.clientY;
+              trackpad.classList.add('scrolling');
+              if (trackpadCursor) trackpadCursor.style.display = 'none';
+              
+              // Haptic feedback
+              if (navigator.vibrate) {
+                navigator.vibrate(20);
+              }
+            } else {
+            // Mouse mode
+            trackpadIsScrolling = false;
+            trackpadIsDragging = false; // Reset drag state
+            trackpadDragStartX = ev.clientX;
+            trackpadDragStartY = ev.clientY;
+            if (trackpadCursor) {
+              trackpadCursor.style.left = touchX + 'px';
+              trackpadCursor.style.top = (ev.clientY - rect.top) + 'px';
+              trackpadCursor.style.display = 'block';
+            }
+          }
+        });
+        
+        trackpad.addEventListener('pointermove', (ev) => {
+          if (!trackpadActive) return;
+          ev.preventDefault();
+          
+          const rect = trackpad.getBoundingClientRect();
+          const touchX = ev.clientX - rect.left;
+          const touchY = ev.clientY - rect.top;
+          const trackpadWidth = rect.width;
+          const scrollZoneWidth = 40; // 40px right edge for scrolling
+          const isRightEdge = touchX > (trackpadWidth - scrollZoneWidth);
+          
+          const dx = (ev.clientX - trackpadLastX) * sensitivity;
+          const dy = (ev.clientY - trackpadLastY) * sensitivity;
+          trackpadLastX = ev.clientX;
+          trackpadLastY = ev.clientY;
+          
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          trackpadTotalDistance += distance;
+          if (trackpadDragHoldTimer && (Math.abs(ev.clientX - trackpadDragStartX) > 8 || Math.abs(ev.clientY - trackpadDragStartY) > 8)) {
+            clearTimeout(trackpadDragHoldTimer); trackpadDragHoldTimer = null;
+          }
+
+          // PRIORITY: If dragging, move mouse with button held down (skip everything else)
+          if (trackpadIsDragging) {
+            const trackpadCursor = document.getElementById('trackpadCursor');
+            if (trackpadCursor) {
+              trackpadCursor.style.left = touchX + 'px';
+              trackpadCursor.style.top = touchY + 'px';
+            }
+            if (!socket || socket.disconnected) return;
+            let sendDx = Math.round(dx);
+            let sendDy = Math.round(dy);
+            if (sendDx === 0 && dx !== 0) sendDx = dx > 0 ? 1 : -1;
+            if (sendDy === 0 && dy !== 0) sendDy = dy > 0 ? 1 : -1;
+            if (sendDx !== 0 || sendDy !== 0) {
+              socket.emit('move', { dx: sendDx, dy: sendDy });
+            }
+            return; // Exit early - don't check for scroll or other modes
+          }
+          
+          // If drag mode enabled but not yet dragging, start on any movement
+          if (!trackpadIsDragging && !trackpadIsScrolling && trackpadIsDragModeEnabled && trackpadDragStartX !== null && trackpadDragStartY !== null) {
+            const dragDistance = Math.sqrt(
+              Math.pow(ev.clientX - trackpadDragStartX, 2) + 
+              Math.pow(ev.clientY - trackpadDragStartY, 2)
+            );
+            if (dragDistance > 2) {
+              // Start dragging - press mouse button down
+              trackpadIsDragging = true;
+              if (!socket || socket.disconnected) return;
+              socket.emit('mousedown', { button: 'left' });
+              // Move cursor immediately
+              const trackpadCursor = document.getElementById('trackpadCursor');
+              if (trackpadCursor) {
+                trackpadCursor.style.left = touchX + 'px';
+                trackpadCursor.style.top = touchY + 'px';
+              }
+              let sendDx = Math.round(dx);
+              let sendDy = Math.round(dy);
+              if (sendDx === 0 && dx !== 0) sendDx = dx > 0 ? 1 : -1;
+              if (sendDy === 0 && dy !== 0) sendDy = dy > 0 ? 1 : -1;
+              if (sendDx !== 0 || sendDy !== 0) {
+                socket.emit('move', { dx: sendDx, dy: sendDy });
+              }
+              return;
+            }
+          }
+            
+            // If already in scroll mode, stay in scroll mode
+            if (trackpadIsScrolling) {
+              // Send scroll events
+              if (!socket || socket.disconnected) return;
+              
+              const scrollDelta = Math.round(dy * sensitivity * 4); // Amplify scroll
+              
+              if (Math.abs(scrollDelta) >= 2) {
+                socket.emit('scroll', { delta: scrollDelta });
+              }
+              
+              return; // Don't move mouse when scrolling
+            }
+            
+            const trackpadCursor = document.getElementById('trackpadCursor');
+            
+            // Check if entering scroll mode at right edge (skip if dragging)
+            if (!trackpadIsDragging && isRightEdge) {
+              // Switch to scroll mode
+              trackpadIsScrolling = true;
+              trackpadScrollStartY = ev.clientY;
+              trackpad.classList.add('scrolling');
+              if (trackpadCursor) trackpadCursor.style.display = 'none';
+              
+              // Haptic feedback when entering scroll mode
+              if (navigator.vibrate) {
+                navigator.vibrate(20);
+              }
+              
+              // Send initial scroll
+              if (!socket || socket.disconnected) return;
+              const scrollDelta = Math.round(dy * sensitivity * 4);
+              if (Math.abs(scrollDelta) >= 2) {
+                socket.emit('scroll', { delta: scrollDelta });
+              }
+              
+              return;
+            }
+            
+            // MOUSE MODE - move cursor and indicator
+            if (trackpadCursor) {
+              trackpadCursor.style.left = touchX + 'px';
+              trackpadCursor.style.top = touchY + 'px';
+            }
+            
+            if (!socket || socket.disconnected) return;
+            
+            let sendDx = Math.round(dx);
+            let sendDy = Math.round(dy);
+            
+            if (sendDx === 0 && dx !== 0) sendDx = dx > 0 ? 1 : -1;
+            if (sendDy === 0 && dy !== 0) sendDy = dy > 0 ? 1 : -1;
+            
+            if (sendDx !== 0 || sendDy !== 0) {
+              socket.emit('move', { dx: sendDx, dy: sendDy });
+            }
+          });
+          
+          trackpad.addEventListener('pointerup', (ev) => {
+            trackpadActive = false;
+            
+            // If dragging, release mouse button
+            if (trackpadIsDragging) {
+              if (!socket.disconnected) {
+                socket.emit('mouseup', { button: 'left' });
+              }
+              trackpadIsDragging = false;
+              // Disable drag mode after releasing
+              trackpadIsDragModeEnabled = false;
+              const badge = trackpad.querySelector('.drag-badge');
+              if (badge) badge.style.display = 'none';
+            }
+            
+            trackpadIsScrolling = false;
+            trackpad.classList.remove('scrolling');
+            const trackpadCursor = document.getElementById('trackpadCursor');
+            if (trackpadCursor) trackpadCursor.style.display = 'none';
+            
+            if (trackpadTotalDistance < 15 && trackpadPointers.size === 1 && !trackpadIsDragging) {
+              socket.emit('click', { button: 'left' });
+            }
+            
+            trackpadTotalDistance = 0;
+            trackpadLastX = null;
+            trackpadLastY = null;
+            trackpadDragStartX = null;
+            trackpadDragStartY = null;
+            trackpadPointers.delete(ev.pointerId);
+          });
+          
+          trackpad.addEventListener('pointercancel', (ev) => {
+            trackpadActive = false;
+            
+            // If dragging, release mouse button
+            if (trackpadIsDragging) {
+              if (!socket.disconnected) {
+                socket.emit('mouseup', { button: 'left' });
+              }
+              trackpadIsDragging = false;
+              // Disable drag mode
+              trackpadIsDragModeEnabled = false;
+              const badge = trackpad.querySelector('.drag-badge');
+              if (badge) badge.style.display = 'none';
+            }
+            
+            trackpadIsScrolling = false;
+            trackpad.classList.remove('scrolling');
+            const trackpadCursor = document.getElementById('trackpadCursor');
+            if (trackpadCursor) trackpadCursor.style.display = 'none';
+            trackpadTotalDistance = 0;
+            trackpadLastX = null;
+            trackpadLastY = null;
+            trackpadDragStartX = null;
+            trackpadDragStartY = null;
+            trackpadPointers.delete(ev.pointerId);
+            if (trackpadDragHoldTimer) { clearTimeout(trackpadDragHoldTimer); trackpadDragHoldTimer = null; }
+          });
+        }
+        
+        // Tabs removed; keyboard tab shown by default
+        
+        function buildKeyboard() {
+          virtualKeyboard.innerHTML = ''; // Clear existing keyboard
+
+          // Top control row: Left, Right, Info
+          const ctrlWrap = document.createElement('div');
+          ctrlWrap.className = 'controls-wrapper';
+          const ctrlRow = document.createElement('div');
+          ctrlRow.className = 'controls-scroll';
+          const controls = [
+            'LeftClick','RightClick','Info',
+            'VolumeDown','VolumeUp','BrightnessDown','BrightnessUp',
+            'OpenBrowser','OpenYouTube'
+          ];
+          controls.forEach(c => createControlKey(c, ctrlRow));
+          // arrows
+          const leftArrow = document.createElement('button');
+          leftArrow.className = 'carousel-arrow left';
+          leftArrow.title = 'Previous';
+          leftArrow.innerHTML = '&#9664;';
+          const rightArrow = document.createElement('button');
+          rightArrow.className = 'carousel-arrow right';
+          rightArrow.title = 'Next';
+          rightArrow.innerHTML = '&#9654;';
+          ctrlWrap.appendChild(leftArrow);
+          ctrlWrap.appendChild(rightArrow);
+          ctrlWrap.appendChild(ctrlRow);
+          virtualKeyboard.appendChild(ctrlWrap);
+          
+          // Collapsible section wrapper (for rows from F2 onwards)
+          const collapsibleSection = document.createElement('div');
+          collapsibleSection.id = 'keyboard-collapsible';
+          collapsibleSection.style.display = keyboardCollapsed ? 'none' : 'flex';
+          collapsibleSection.style.flexDirection = 'column';
+          collapsibleSection.style.gap = '4px';
+          
+          // F1 row with collapse button + F1-F7
+          const fRow1 = document.createElement('div');
+          fRow1.className = 'keyboard-row';
+          fRow1.style.gridTemplateColumns = '0.8fr repeat(7, 1fr)';
+          // Collapse/Expand button
+          const collapseBtn = document.createElement('button');
+          collapseBtn.className = 'key key-desktop';
+          collapseBtn.dataset.key = 'Collapse';
+          collapseBtn.innerHTML = keyboardCollapsed ? '▼' : '▲';
+          collapseBtn.title = keyboardCollapsed ? 'Expand keyboard' : 'Collapse keyboard';
+          collapseBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (navigator.vibrate) navigator.vibrate(20);
+            keyboardCollapsed = !keyboardCollapsed;
+            collapseBtn.innerHTML = keyboardCollapsed ? '▼' : '▲';
+            collapseBtn.title = keyboardCollapsed ? 'Expand keyboard' : 'Collapse keyboard';
+            collapsibleSection.style.display = keyboardCollapsed ? 'none' : 'flex';
+          });
+          fRow1.appendChild(collapseBtn);
+          ['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7'].forEach(key => {
+            const btn = createKey(key, fRow1);
+            btn.classList.add('key-desktop');
+          });
+          virtualKeyboard.appendChild(fRow1);
+          
+          // F8-F12 + Shift row (second F row)
+          const fRow2 = document.createElement('div');
+          fRow2.className = 'keyboard-row';
+          fRow2.style.gridTemplateColumns = 'repeat(5, 1fr) 1.5fr';
+          ['F8', 'F9', 'F10', 'F11', 'F12', 'Shift'].forEach(key => {
+            const btn = createKey(key, fRow2);
+            btn.classList.add('key-desktop');
+          });
+          collapsibleSection.appendChild(fRow2);
+          
+          // Desktop keys - top strip 1
+          const strip1 = document.createElement('div');
+          strip1.className = 'keyboard-row desktop-strip1';
+          ['Esc', '/', '-', 'Home', '↑', 'End', 'PgUp', 'PgDn'].forEach(key => {
+            const btn = createKey(key, strip1);
+            btn.classList.add('key-desktop');
+          });
+          collapsibleSection.appendChild(strip1);
+          
+          // Desktop keys - top strip 2
+          const strip2 = document.createElement('div');
+          strip2.className = 'keyboard-row desktop-strip2';
+          ['Ctrl', 'Alt', '←', '↓', '→', 'Tab', 'Del'].forEach(key => {
+            const btn = createKey(key, strip2);
+            btn.classList.add('key-desktop');
+          });
+          collapsibleSection.appendChild(strip2);
+          
+          // Number/Symbol row
+          const numbersRow = document.createElement('div');
+          numbersRow.className = 'keyboard-row numbers';
+          ['1','2','3','4','5','6','7','8','9','0','-','=','Backspace'].forEach(key => {
+            createKey(key, numbersRow);
+          });
+          collapsibleSection.appendChild(numbersRow);
+          
+          if (symbolMode) {
+            // Symbol mode rows
+            const symRow1 = document.createElement('div');
+            symRow1.className = 'keyboard-row top';
+            symRow1.style.gridTemplateColumns = 'repeat(10, 1fr)';
+            ['!','@','#','$','%','^','&','*','(',')'].forEach(key => {
+              createKey(key, symRow1);
+            });
+            collapsibleSection.appendChild(symRow1);
+            
+            const symRow2 = document.createElement('div');
+            symRow2.className = 'keyboard-row middle';
+            symRow2.style.gridTemplateColumns = 'repeat(8, 1fr)';
+            ['[',']',':',';','(',')','_','"'].forEach(key => {
+              createKey(key, symRow2);
+            });
+            collapsibleSection.appendChild(symRow2);
+            
+            const symRow3 = document.createElement('div');
+            symRow3.className = 'keyboard-row bottom';
+            symRow3.style.gridTemplateColumns = 'repeat(8, 1fr)';
+            ['{','}','|','?','~','`','<','>'].forEach(key => {
+              createKey(key, symRow3);
+            });
+            collapsibleSection.appendChild(symRow3);
+          } else {
+            // Standard QWERTY layout - apply caps mode for visual display
+            const letters = capsMode ? 'QWERTYUIOP' : 'qwertyuiop';
+            const middleLetters = capsMode ? 'ASDFGHJKL' : 'asdfghjkl';
+            const bottomLetters = capsMode ? ['Caps','Z','X','C','V','B','N','M',',','.','/'] : ['Caps','z','x','c','v','b','n','m',',','.','/'];
+            
+            // Top QWERTY row (q-p or Q-P)
+          const topRow = document.createElement('div');
+          topRow.className = 'keyboard-row top';
+            letters.split('').forEach(key => {
+            createKey(key, topRow);
+          });
+          collapsibleSection.appendChild(topRow);
+          
+            // Middle row (a-l or A-L)
+          const middleRow = document.createElement('div');
+          middleRow.className = 'keyboard-row middle';
+            middleLetters.split('').forEach(key => {
+            createKey(key, middleRow);
+          });
+          collapsibleSection.appendChild(middleRow);
+          
+            // Bottom row (z-m + symbols or Z-M + symbols)
+          const bottomRow = document.createElement('div');
+          bottomRow.className = 'keyboard-row bottom';
+            bottomLetters.forEach(key => {
+            createKey(key, bottomRow);
+          });
+          collapsibleSection.appendChild(bottomRow);
+          }
+          
+          // Space/control row - Space bar centered and wider
+          const spaceRow = document.createElement('div');
+          spaceRow.className = 'keyboard-row space';
+          spaceRow.style.gridTemplateColumns = '1fr 2.5fr 1fr 1fr 1fr';
+          ['?123', 'Space', '.', 'Enter', 'Windows'].forEach(key => {
+            createKey(key, spaceRow);
+          });
+          collapsibleSection.appendChild(spaceRow);
+          
+          // Append collapsible section to keyboard
+          virtualKeyboard.appendChild(collapsibleSection);
+          
+          // Add special styling for symbol toggle button
+          const symbolBtn = spaceRow.querySelector('.key[data-key="?123"]');
+          if (symbolBtn) {
+            symbolBtn.classList.toggle('active', symbolMode);
+          }
+          
+          // Add special styling for caps button (in letter row only)
+          const capsBtn = document.querySelector('.keyboard-row.bottom .key[data-key="Caps"]');
+          if (capsBtn) {
+            capsBtn.classList.toggle('active', capsMode);
+          }
+        }
+        
+        function createKey(key, parent) {
+          const btn = document.createElement('button');
+          btn.className = 'key';
+          btn.textContent = getKeyDisplay(key);
+          btn.dataset.key = key; // Store key value for easy querying
+          
+          // Add touch event handlers with haptic and visual feedback
+          btn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            
+            // Haptic feedback
+            if (navigator.vibrate) {
+              navigator.vibrate(20);
+            }
+            
+            // Visual feedback
+            btn.style.background = '#3a3a3a';
+            btn.style.transform = 'scale(0.95)';
+            
+            // Handle special keys (Caps toggle, symbol toggle)
+            if (key === 'Caps') {
+              capsMode = !capsMode;
+              buildKeyboard(); // Rebuild to show uppercase letters
+              return;
+            }
+            
+            if (key === '?123') {
+              symbolMode = !symbolMode;
+              buildKeyboard();
+              return;
+            }
+            
+            // Check if this is a modifier key for shortcuts
+            const isModifier = ['Ctrl', 'Alt', 'Shift', 'Windows'].includes(key);
+            
+            if (isModifier) {
+              // Toggle modifier state
+              const modifierKey = key.toLowerCase();
+              modifierKeys[modifierKey] = !modifierKeys[modifierKey];
+              btn.classList.toggle('active', modifierKeys[modifierKey]);
+              
+              // Send the modifier press
+            sendKeyPress(key);
+              return;
+            }
+            
+            // For regular keys with active modifiers, don't send modifiers here
+            // The server will apply the active modifier state automatically
+            
+            // Apply caps mode to letters - normalize to lowercase first, then apply caps
+            const normalizedKey = /^[A-Z]$/.test(key) ? key.toLowerCase() : key;
+            const keyToSend = capsMode && /^[a-z]$/.test(normalizedKey) ? normalizedKey.toUpperCase() : normalizedKey;
+            sendKeyPress(keyToSend);
+            
+            // Keep modifiers active - don't reset them
+            // This allows for keyboard shortcuts like Ctrl+Z, Alt+Tab, Win+R, etc.
+          });
+          
+          btn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            // Reset visual feedback - preserve active state for green buttons
+            setTimeout(() => {
+              if (!btn.classList.contains('active')) {
+                btn.style.background = '';
+              } else {
+                // If active, let CSS class handle the green background
+                btn.style.background = '';
+              }
+              btn.style.transform = '';
+            }, 150);
+          });
+          
+          parent.appendChild(btn);
+          return btn;
+        }
+
+        function createControlKey(type, parent) {
+          const btn = document.createElement('button');
+          btn.className = 'key key-outline';
+          // Icons + text
+          const span = document.createElement('span');
+          span.className = 'btn-content';
+          const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          icon.setAttribute('viewBox', '0 0 24 24');
+          icon.classList.add('icon');
+          const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          if (type === 'LeftClick') {
+            // Left arrow
+            path.setAttribute('d', 'M14 7l-5 5 5 5');
+            path.setAttribute('fill', 'none');
+            path.setAttribute('stroke', 'currentColor');
+            path.setAttribute('stroke-width', '2');
+            path.setAttribute('stroke-linecap', 'round');
+            path.setAttribute('stroke-linejoin', 'round');
+            icon.appendChild(path);
+            const label = document.createElement('span');
+            label.textContent = 'Left';
+            span.appendChild(icon); span.appendChild(label);
+          } else if (type === 'RightClick') {
+            // Right arrow
+            path.setAttribute('d', 'M10 17l5-5-5-5');
+            path.setAttribute('fill', 'none');
+            path.setAttribute('stroke', 'currentColor');
+            path.setAttribute('stroke-width', '2');
+            path.setAttribute('stroke-linecap', 'round');
+            path.setAttribute('stroke-linejoin', 'round');
+            icon.appendChild(path);
+            const label = document.createElement('span');
+            label.textContent = 'Right';
+            span.appendChild(icon); span.appendChild(label);
+          } else if (type === 'Info') {
+            // Info circle
+            const circle = document.createElementNS('http://www.w3.org/2000/svg','circle');
+            circle.setAttribute('cx','12'); circle.setAttribute('cy','12'); circle.setAttribute('r','10');
+            circle.setAttribute('fill','none'); circle.setAttribute('stroke','currentColor'); circle.setAttribute('stroke-width','2');
+            const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+            line.setAttribute('x1','12'); line.setAttribute('y1','10'); line.setAttribute('x2','12'); line.setAttribute('y2','16');
+            line.setAttribute('stroke','currentColor'); line.setAttribute('stroke-width','2'); line.setAttribute('stroke-linecap','round');
+            const dot = document.createElementNS('http://www.w3.org/2000/svg','circle');
+            dot.setAttribute('cx','12'); dot.setAttribute('cy','7'); dot.setAttribute('r','1'); dot.setAttribute('fill','currentColor');
+            icon.appendChild(circle); icon.appendChild(line); icon.appendChild(dot);
+            span.appendChild(icon);
+          } else if (type === 'VolumeUp' || type === 'VolumeDown') {
+            // Speaker icon + +/-
+            path.setAttribute('d','M3 10v4h4l5 4V6L7 10H3');
+            path.setAttribute('fill','none'); path.setAttribute('stroke','currentColor'); path.setAttribute('stroke-width','2'); path.setAttribute('stroke-linecap','round'); path.setAttribute('stroke-linejoin','round');
+            icon.appendChild(path);
+            span.appendChild(icon);
+            const label = document.createElement('span');
+            label.textContent = (type === 'VolumeUp') ? 'Vol +' : 'Vol -';
+            span.appendChild(label);
+          } else if (type === 'BrightnessUp' || type === 'BrightnessDown') {
+            // Sun icon
+            const circle = document.createElementNS('http://www.w3.org/2000/svg','circle');
+            circle.setAttribute('cx','12'); circle.setAttribute('cy','12'); circle.setAttribute('r','4'); circle.setAttribute('fill','none'); circle.setAttribute('stroke','currentColor'); circle.setAttribute('stroke-width','2');
+            icon.appendChild(circle);
+            const rays = [[12,2,12,4],[12,20,12,22],[2,12,4,12],[20,12,22,12],[4.9,4.9,6.3,6.3],[17.7,17.7,19.1,19.1],[17.7,6.3,19.1,4.9],[4.9,19.1,6.3,17.7]];
+            rays.forEach(r=>{const ln=document.createElementNS('http://www.w3.org/2000/svg','line');ln.setAttribute('x1',r[0]);ln.setAttribute('y1',r[1]);ln.setAttribute('x2',r[2]);ln.setAttribute('y2',r[3]);ln.setAttribute('stroke','currentColor');ln.setAttribute('stroke-width','2');ln.setAttribute('stroke-linecap','round');icon.appendChild(ln);});
+            span.appendChild(icon);
+            const label = document.createElement('span');
+            label.textContent = (type === 'BrightnessUp') ? 'Bright +' : 'Bright -';
+            span.appendChild(label);
+          } else if (type === 'OpenBrowser') {
+            // Globe icon + text
+            const circle = document.createElementNS('http://www.w3.org/2000/svg','circle');
+            circle.setAttribute('cx','12'); circle.setAttribute('cy','12'); circle.setAttribute('r','9'); circle.setAttribute('fill','none'); circle.setAttribute('stroke','currentColor'); circle.setAttribute('stroke-width','2');
+            icon.appendChild(circle);
+            const arc = document.createElementNS('http://www.w3.org/2000/svg','path');
+            arc.setAttribute('d','M3 12h18M12 3c3.5 4 3.5 14 0 18M12 3c-3.5 4-3.5 14 0 18'); arc.setAttribute('fill','none'); arc.setAttribute('stroke','currentColor'); arc.setAttribute('stroke-width','2'); arc.setAttribute('stroke-linecap','round');
+            icon.appendChild(arc);
+            span.appendChild(icon);
+            const label = document.createElement('span'); label.textContent = 'Browser'; span.appendChild(label);
+          } else if (type === 'OpenYouTube') {
+            // Play icon + text
+            const rect = document.createElementNS('http://www.w3.org/2000/svg','rect'); rect.setAttribute('x','3'); rect.setAttribute('y','6'); rect.setAttribute('width','18'); rect.setAttribute('height','12'); rect.setAttribute('rx','3'); rect.setAttribute('fill','none'); rect.setAttribute('stroke','currentColor'); rect.setAttribute('stroke-width','2'); icon.appendChild(rect);
+            const tri = document.createElementNS('http://www.w3.org/2000/svg','path'); tri.setAttribute('d','M10 9l6 3-6 3z'); tri.setAttribute('fill','currentColor'); icon.appendChild(tri);
+            span.appendChild(icon);
+            const label = document.createElement('span'); label.textContent = 'YouTube'; span.appendChild(label);
+          }
+          btn.appendChild(span);
+          btn.dataset.key = type;
+          const onPress = () => { btn.classList.add('pressed'); if (navigator.vibrate) navigator.vibrate(15); };
+          const onRelease = () => { setTimeout(()=> btn.classList.remove('pressed'), 120); };
+          btn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            onPress();
+            if (!socket || socket.disconnected) return;
+            if (type === 'LeftClick') { socket.emit('click', { button: 'left' }); return; }
+            if (type === 'RightClick') { socket.emit('click', { button: 'right' }); return; }
+            if (type === 'Info') { openInfoModal(); return; }
+            // App actions
+            socket.emit('action', { type });
+          });
+          btn.addEventListener('touchend', (e) => { e.preventDefault(); onRelease(); });
+          btn.addEventListener('touchcancel', (e) => { e.preventDefault(); onRelease(); });
+          // Accessibility titles
+          btn.title = type === 'LeftClick' ? 'Left Click' : type === 'RightClick' ? 'Right Click' : 'Info';
+          parent.appendChild(btn);
+          return btn;
+        }
+
+        function openInfoModal() {
+          const modal = document.getElementById('infoModal');
+          const content = document.getElementById('infoModalContent');
+          const infoEl = document.getElementById('tab-info');
+          if (content && infoEl) content.innerHTML = infoEl.innerHTML;
+          if (modal) modal.style.display = 'block';
+          // Populate status within the modal using current socket state
+          if (content) {
+            const cs = content.querySelector('#connection-status');
+            const ip = content.querySelector('#info-ip');
+            if (cs) cs.textContent = (socket && socket.connected) ? 'Connected' : 'Disconnected';
+            if (ip) ip.textContent = `Server: ${window.location.hostname}:${window.location.port || 8000}`;
+          }
+        }
+
+        // Setup carousel arrows (native scrolling only)
+        (function(){
+          const container = document.querySelector('.controls-scroll');
+          const leftBtn = document.querySelector('.carousel-arrow.left');
+          const rightBtn = document.querySelector('.carousel-arrow.right');
+          if (!container) return;
+          const scrollByItems = (dir)=>{
+            const item = container.querySelector('.key');
+            const gap = 8; const width = item ? item.getBoundingClientRect().width : 120;
+            container.scrollBy({ left: dir * (width + gap), behavior: 'smooth' });
+          };
+          if (leftBtn) leftBtn.addEventListener('click', ()=> scrollByItems(-1));
+          if (rightBtn) rightBtn.addEventListener('click', ()=> scrollByItems(1));
+        })();
+        
+        function getKeyDisplay(key) {
+          const displayMap = {
+            'Space': '␣',
+            'Backspace': '⌫',
+            'Enter': '↵',
+            'Shift': '⇧',
+            'Windows': '⊞',
+            'Caps': '⇪',
+            'Menu': '☰',
+            'Tab': '⇥',
+            'Esc': 'Esc',
+            'Ctrl': 'Ctrl',
+            'Alt': 'Alt',
+            'Up': '↑',
+            'Down': '↓',
+            'Left': '←',
+            'Right': '→',
+            'Home': 'Home',
+            'End': 'End',
+            'PgUp': 'PgUp',
+            'PgDn': 'PgDn',
+            'Del': 'Del',
+            '?123': '?123',
+            'F1': 'F1', 'F2': 'F2', 'F3': 'F3', 'F4': 'F4',
+            'F5': 'F5', 'F6': 'F6', 'F7': 'F7', 'F8': 'F8',
+            'F9': 'F9', 'F10': 'F10', 'F11': 'F11', 'F12': 'F12',
+            '\\': '\\',
+            '[': '[',
+            ']': ']',
+            ';': ';',
+            "'": "'",
+            ',': ',',
+            '.': '.',
+            '/': '/',
+            '-': '-',
+            '=': '=',
+            '': ''
+          };
+          return displayMap[key] || key;
+        }
+        
+        // Tab switching is handled above
+        
+        function sendKeyPress(key) {
+          if (!socket || socket.disconnected) return;
+          
+          // Map special keys to nut-js Key enum values
+          const keyMap = {
+            'Space': ' ',
+            'Backspace': 'Backspace',
+            'Enter': 'Enter',
+            'Shift': 'Shift',
+            'Ctrl': 'Ctrl',
+            'Alt': 'Alt',
+            'Esc': 'Escape',
+            'Tab': 'Tab',
+            'Windows': 'Super',
+            'Menu': 'ContextMenu',
+            'Caps': 'CapsLock',
+            'Up': 'ArrowUp',
+            '↓': 'ArrowDown',
+            '←': 'ArrowLeft',
+            '→': 'ArrowRight',
+            'Home': 'Home',
+            'End': 'End',
+            'PgUp': 'PageUp',
+            'PgDn': 'PageDown',
+            'Del': 'Delete',
+            '?123': '', // Handled in touchstart
+            '↑': 'ArrowUp',
+            'Left': 'ArrowLeft',
+            'Right': 'ArrowRight',
+            'Down': 'ArrowDown',
+            'F1': 'F1', 'F2': 'F2', 'F3': 'F3', 'F4': 'F4',
+            'F5': 'F5', 'F6': 'F6', 'F7': 'F7', 'F8': 'F8',
+            'F9': 'F9', 'F10': 'F10', 'F11': 'F11', 'F12': 'F12'
+          };
+          
+          // If not in special key map, use the key as-is (for letters, numbers, symbols)
+          const keyValue = keyMap[key] !== undefined ? keyMap[key] : key;
+          
+          if (keyValue === '') return; // Skip empty keys
+          
+          socket.emit('keyboard', { key: keyValue });
+        }
+        
+        function updateModifierButton(key) {
+          const btn = document.querySelector(`[data-key="${key}"]`);
+          if (btn) {
+            btn.classList.toggle('active', modifierKeys[key.toLowerCase()]);
+          }
+        }
+      }
+    })();
+  </script>
+</body>
+</html>
