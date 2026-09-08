@@ -21,7 +21,12 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
-const io = new IOServer(server);
+const io = new IOServer(server, {
+  connectionStateRecovery: {
+    maxDisconnectionDuration: 2 * 60 * 1000,
+    skipMiddlewares: false
+  }
+});
 let activePort = null;
 let screenCaptureInFlight = null;
 

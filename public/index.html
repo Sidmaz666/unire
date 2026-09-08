@@ -752,8 +752,17 @@
           timeout: 10000
         });
 
+        const setConnectionStatus = (status) => {
+          if (statusEl) statusEl.textContent = status;
+          const connStatus = document.getElementById('connection-status');
+          if (connStatus) connStatus.textContent = status;
+          const modalContent = document.getElementById('infoModalContent');
+          const modalStatus = modalContent?.querySelector('#connection-status');
+          if (modalStatus) modalStatus.textContent = status;
+        };
+
         socket.on('connect', () => {
-          statusEl.textContent = 'Connected';
+          setConnectionStatus('Connected');
           const connStatus = document.getElementById('connection-status');
           const infoIP = document.getElementById('info-ip');
           if (connStatus) connStatus.textContent = 'Connected';
@@ -768,24 +777,13 @@
           }
         });
         socket.on('connect_error', (err) => {
-          statusEl.textContent = 'Connect error';
-          const connStatus = document.getElementById('connection-status');
-          if (connStatus) connStatus.textContent = 'Error';
-          const modalContent = document.getElementById('infoModalContent');
-          if (modalContent) {
-            const cs = modalContent.querySelector('#connection-status');
-            if (cs) cs.textContent = 'Error';
-          }
+          setConnectionStatus('Reconnecting');
         });
+        socket.io.on('reconnect_attempt', () => setConnectionStatus('Reconnecting'));
+        socket.io.on('reconnect_error', () => setConnectionStatus('Reconnecting'));
+        socket.io.on('reconnect_failed', () => setConnectionStatus('Disconnected'));
         socket.on('disconnect', () => {
-          statusEl.textContent = 'Disconnected';
-          const connStatus = document.getElementById('connection-status');
-          if (connStatus) connStatus.textContent = 'Disconnected';
-          const modalContent = document.getElementById('infoModalContent');
-          if (modalContent) {
-            const cs = modalContent.querySelector('#connection-status');
-            if (cs) cs.textContent = 'Disconnected';
-          }
+          setConnectionStatus('Reconnecting');
         });
 
         if (touchArea) {
