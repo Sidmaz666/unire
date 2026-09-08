@@ -6,9 +6,8 @@
   <title>Remote Mouse</title>
   <style>
     * { -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; }
-    :root { --ink:#f5f7f4; --muted:#9aa49d; --panel:#171b19; --panel-2:#202622; --line:rgba(255,255,255,.12); --accent:#b7f36b; --accent-ink:#15210e; }
-    html,body { width:100%; min-width:100dvw; height:100%; min-height:100dvh; margin:0; overflow:hidden; font-family: Arial, Helvetica, sans-serif; background:#0c100e; color:var(--ink); -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
-    #app { display:flex; flex-direction:column; width:100dvw; height:100dvh; min-height:0; }
+    html,body { height:100%; margin:0; font-family: Arial, Helvetica, sans-serif; background:#111; color:#eee; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
+    #app { display:flex; flex-direction:column; height:100%; }
     
     /* Tabs at the top */
     .tabs { display:flex; width:100%; background:#0b0b0b; border-bottom:1px solid rgba(255,255,255,0.1); }
@@ -17,48 +16,10 @@
     .tab.active { color:#fff; border-bottom-color:#0f0; background:rgba(255,255,255,0.02); }
     
     #content { flex:1; display:flex; flex-direction:column; overflow:hidden; }
-    .mode-bar { display:none; }
-    .mode-button { flex:1; min-height:40px; border:1px solid var(--line); border-radius:10px; background:transparent; color:var(--muted); font-weight:700; font-size:12px; }
-    .mode-button.active { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
-    .mode-panel { display:none; flex:1; min-height:0; flex-direction:column; }
-    .mode-panel.active { display:flex; }
-    #screen-mode { width:100%; height:100%; min-height:0; box-sizing:border-box; padding:clamp(8px, 2dvw, 16px); gap:10px; overflow:hidden; justify-content:center; }
-    .screen-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px; flex:0 0 auto; }
-    .screen-actions { display:flex; align-items:center; gap:8px; }
-    .stream-status-wrap { display:inline-flex; align-items:center; gap:7px; color:#b7ff72; font-size:12px; font-weight:700; letter-spacing:.04em; }
-    .stream-status { width:10px; height:10px; border-radius:50%; background:#39ff14; box-shadow:0 0 12px #39ff14; }
-    .stream-status.live { animation:stream-pulse .9s ease-in-out infinite alternate; }
-    .stream-status.offline { background:#ff6b6b; box-shadow:0 0 10px rgba(255,107,107,.8); animation:none; }
-    .stream-rate { color:var(--muted); font-size:11px; font-weight:600; letter-spacing:.02em; }
-    @keyframes stream-pulse { from { opacity:.45; transform:scale(.85); } to { opacity:1; transform:scale(1.15); } }
-    .screen-action { width:40px; height:40px; min-height:40px; padding:8px; border:1px solid var(--line); border-radius:9px; background:var(--panel-2); color:var(--ink); display:inline-flex; align-items:center; justify-content:center; }
-    .screen-action svg { width:20px; height:20px; }
-    .settings-panel { display:none; position:fixed; inset:0; z-index:10000; align-items:center; justify-content:center; padding:20px; background:rgba(0,0,0,.78); }
-    .settings-card { width:min(420px, 90dvw); background:#151a16; border:1px solid var(--line); border-radius:14px; padding:18px; box-sizing:border-box; }
-    .settings-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
-    .settings-head strong { font-size:16px; }
-    .settings-close { width:36px; height:36px; padding:0; font-size:24px; }
-    .setting-row { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:48px; border-top:1px solid var(--line); color:var(--ink); font-size:14px; }
-    .setting-row input { width:20px; height:20px; accent-color:var(--accent); }
-    #screenViewport { flex:0 1 auto; width:100%; aspect-ratio:16 / 9; max-height:calc(100% - 50px); display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative; background:#050705; border:1px solid var(--line); border-radius:14px; touch-action:none; }
-    #screenImage { display:block; width:100%; height:100%; object-fit:contain; transform-origin:center center; touch-action:none; }
-    #screenClose { min-width:42px; font-size:24px; line-height:1; }
-    #screenTextInput { position:fixed; left:-10000px; top:0; width:1px; height:1px; opacity:.01; }
-    #screenCursor, #screenTouchIndicator { position:absolute; pointer-events:none; z-index:2; transform:translate(-50%, -50%); }
-    #screenCursor { width:13px; height:13px; border:2px solid #fff; border-radius:50%; background:#39ff14; box-shadow:0 0 0 2px #111, 0 0 10px #39ff14; }
-    #screenTouchIndicator { width:28px; height:28px; border:2px solid var(--accent); border-radius:50%; background:color-mix(in srgb, var(--accent) 25%, transparent); box-shadow:0 0 14px var(--accent); opacity:0; transition:opacity .12s ease; }
-    #screenTouchIndicator.visible { opacity:1; }
-    @media (orientation: portrait) {
-      #screen-mode { justify-content:stretch; }
-      #screenViewport { width:100%; height:calc(100% - 50px); max-height:none; aspect-ratio:9 / 16; }
-      #screenImage { width:calc(100% * 16 / 9); height:auto; max-width:none; object-fit:contain; transform:rotate(90deg); }
-    }
-    @media (orientation: landscape) { #screenViewport { max-height:calc(100% - 50px); } }
-    #tab-keyboard { display:none; height:100%; width:min(100%, calc(100dvh * 9 / 16)); min-height:0; margin-inline:auto; flex-direction:column; }
-    #tab-keyboard.active { display:flex; }
+    #tab-keyboard { display:flex; height:100%; width:100%; flex-direction:column; }
     #tab-info { display:none; height:100%; overflow-y:auto; }
     #pad { flex:1; display:flex; justify-content:center; align-items:center; position:relative; min-height:0; }
-    #trackpad { flex:1 1 auto; display:flex; justify-content:center; align-items:center; margin:clamp(6px, 2dvw, 10px); background:rgba(255,255,255,0.03); border-radius:14px; min-height:0; touch-action:none; position:relative; transition: background 0.1s ease; }
+    #trackpad { flex:1; display:flex; justify-content:center; align-items:center; margin:10px; background:rgba(255,255,255,0.03); border-radius:14px; min-height:200px; touch-action:none; position:relative; transition: background 0.1s ease; }
     #trackpad.scrolling { background: linear-gradient(to right, rgba(255,255,255,0.03), rgba(0,255,255,0.15)) !important; }
     #touchArea {
       width:92%; height:80%; border-radius:14px; background:rgba(255,255,255,0.03);
@@ -69,37 +30,18 @@
     #keyboardMode { 
       width:100%; 
       background:#0f0f0f; 
-      flex:0 1 auto;
-      height:62dvh;
-      max-height:none;
-      overflow:hidden;
       padding:10px 4px 8px 4px; 
       box-shadow: 0 -4px 20px rgba(0,0,0,0.3);
       border-radius: 12px 12px 0 0;
       box-sizing: border-box;
       margin-top: auto;
     }
-    #keyboardMode.collapsed { height:auto; flex:0 0 auto; }
     #virtualKeyboard { 
       display:flex; 
       flex-direction:column; 
       gap:4px; 
       width:100%;
       box-sizing: border-box;
-    }
-    @media (orientation: landscape) {
-      #keyboardMode { height:62dvh; }
-      .key { min-height:clamp(22px, 5dvh, 38px); padding:clamp(2px, .6dvh, 6px) 2px; font-size:clamp(9px, 1.8dvw, 13px); }
-      .key-desktop { min-height:clamp(18px, 4dvh, 28px); }
-    }
-    @media (max-width: 480px) {
-      .mode-button { min-height:38px; }
-      #screenViewport { border-radius:10px; }
-      .screen-action { min-height:34px; padding:8px 10px; }
-      .controls-wrapper { padding-inline:34px; }
-      #keyboardMode { height:62dvh; }
-      .key { min-height:clamp(20px, 4.2dvh, 32px); padding:2px; font-size:clamp(9px, 2.7vw, 12px); border-radius:5px; }
-      .keyboard-row { gap:2px; }
     }
     .keyboard-row { 
       display:grid; 
@@ -131,7 +73,7 @@
     .key.fn { font-size:11px; padding:8px 2px; min-height:36px; box-sizing: border-box; }
     .key.windows { font-size:20px; }
     .key-desktop { font-size:11px; padding:8px 2px; min-height:32px; background:#0d0d0d; box-sizing: border-box; }
-    .key.active { background:var(--accent) !important; color:var(--accent-ink); border-color:var(--accent) !important; }
+    .key.active { background:#2a5a2a !important; border-color:#0f0 !important; }
     /* Outline variant (no background) */
     .key-outline { background:transparent; border:1px solid #444; color:#ddd; }
     .key-outline:active { background:rgba(255,255,255,0.05); }
@@ -139,7 +81,7 @@
     .key .btn-content { display:inline-flex; align-items:center; gap:8px; }
     .key .icon { width:18px; height:18px; display:inline-block; }
     .key.key-info .icon { width:18px; height:18px; }
-    .key.pressed { background:var(--accent) !important; color:var(--accent-ink); transform:scale(0.97); border-color:var(--accent); }
+    .key.pressed { background:rgba(255,255,255,0.06) !important; transform:scale(0.97); border-color:#666; }
     
     /* Desktop keys - top strips */
     .keyboard-row.desktop-strip1 { grid-template-columns: repeat(8, 1fr); }
@@ -196,26 +138,10 @@
 
     <!-- Content Area -->
     <div id="content">
-      <section id="screen-mode" class="mode-panel" aria-label="Screen mode">
-        <div class="screen-toolbar">
-          <span class="stream-status-wrap"><span class="stream-status" aria-label="Streaming"></span><span>Live</span><span id="streamRate" class="stream-rate">0 fps</span></span>
-          <div class="screen-actions">
-            <button id="screenKeyboard" class="screen-action" title="Open keyboard" aria-label="Open keyboard">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h.01M10 9h.01M13 9h.01M16 9h.01M7 13h10M8 16h8"/></svg>
-            </button>
-            <button id="screenRefresh" class="screen-action" title="Refresh screen" aria-label="Refresh screen">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0 2 5"/><path d="M20 4v7h-7"/></svg>
-            </button>
-            <button id="screenClose" class="screen-action" title="Return to manual" aria-label="Return to manual">&times;</button>
-          </div>
-        </div>
-        <div id="screenViewport"><img id="screenImage" alt="Live desktop screen" /><span id="screenCursor" aria-hidden="true"></span><span id="screenTouchIndicator" aria-hidden="true"></span></div>
-      </section>
-
       <!-- Remote Tab (formerly Keyboard) -->
 
       <!-- Keyboard Tab -->
-      <div id="tab-keyboard" class="mode-panel">
+      <div id="tab-keyboard">
         <div id="trackpad">
           <div style="text-align:center; color:#999; font-size:14px;">
             Touch and drag here to move mouse
@@ -224,16 +150,6 @@
         </div>
         <div id="keyboardMode">
           <div id="virtualKeyboard"></div>
-        </div>
-      </div>
-      <input id="screenTextInput" type="text" inputmode="text" enterkeyhint="enter" autocomplete="off" autocapitalize="sentences" aria-label="Screen text input" />
-
-      <div id="settingsModal" class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
-        <div class="settings-card">
-          <div class="settings-head"><strong>Settings</strong><button id="settingsClose" class="settings-close" aria-label="Close settings">&times;</button></div>
-          <label class="setting-row" for="soundEffectsToggle"><span>Sound effects</span><input id="soundEffectsToggle" type="checkbox" /></label>
-          <label class="setting-row" for="hapticsToggle"><span>Haptic feedback</span><input id="hapticsToggle" type="checkbox" /></label>
-          <label class="setting-row" for="accentColorPicker"><span>Accent color</span><input id="accentColorPicker" type="color" value="#b7f36b" /></label>
         </div>
       </div>
 
@@ -323,23 +239,6 @@
       const btnRight = document.getElementById('btn-right');
       const btnLogout = document.getElementById('btn-logout');
       const keyboardMode = document.getElementById('keyboardMode');
-      const screenMode = document.getElementById('screen-mode');
-      const keyboardTab = document.getElementById('tab-keyboard');
-      const screenImage = document.getElementById('screenImage');
-      const screenViewport = document.getElementById('screenViewport');
-      const screenTextInput = document.getElementById('screenTextInput');
-      const streamStatus = document.querySelector('.stream-status');
-      const streamRate = document.getElementById('streamRate');
-      const screenCursor = document.getElementById('screenCursor');
-      const screenTouchIndicator = document.getElementById('screenTouchIndicator');
-      let screenTimer = null;
-      let cursorTimer = null;
-      let frameRequestInFlight = false;
-      let cursorRequestInFlight = false;
-      let screenObjectUrl = null;
-      let lastFrameAt = 0;
-      let latestCursorPosition = null;
-      let switchMode = null;
       const virtualKeyboard = document.getElementById('virtualKeyboard');
       // Tabs removed; show Remote by default
 
@@ -359,7 +258,6 @@
             if (e.target === infoModal) infoModal.style.display = 'none';
           });
         }
-        setupModes();
         initSocket();
       });
 
@@ -384,373 +282,9 @@
       let lastTapY = 0;
       let isDragModeEnabled = false;
       let dragHoldTimer = null;
-      const feedbackSettings = {
-        sound: localStorage.getItem('unire_sound_effects') !== 'false',
-        haptics: localStorage.getItem('unire_haptics') !== 'false'
-      };
-      const accentColor = localStorage.getItem('unire_accent_color') || '#b7f36b';
-      let audioContext = null;
-
-      function applyAccentColor(color) {
-        const hex = color.replace('#', '');
-        const red = parseInt(hex.slice(0, 2), 16);
-        const green = parseInt(hex.slice(2, 4), 16);
-        const blue = parseInt(hex.slice(4, 6), 16);
-        const ink = (red * 299 + green * 587 + blue * 114) > 150000 ? '#15210e' : '#ffffff';
-        document.documentElement.style.setProperty('--accent', color);
-        document.documentElement.style.setProperty('--accent-ink', ink);
-      }
-
-      applyAccentColor(accentColor);
-
-      function provideFeedback(duration = 20, pattern = null) {
-        if (feedbackSettings.haptics && navigator.vibrate) navigator.vibrate(pattern || duration);
-        if (!feedbackSettings.sound) return;
-        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        if (!AudioContextClass) return;
-        audioContext ||= new AudioContextClass();
-        if (audioContext.state === 'suspended') audioContext.resume();
-        const oscillator = audioContext.createOscillator();
-        const gain = audioContext.createGain();
-        oscillator.frequency.value = 520;
-        gain.gain.setValueAtTime(0.035, audioContext.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.045);
-        oscillator.connect(gain).connect(audioContext.destination);
-        oscillator.start();
-        oscillator.stop(audioContext.currentTime + 0.05);
-      }
-
-      function setupSettings() {
-        const modal = document.getElementById('settingsModal');
-        const soundToggle = document.getElementById('soundEffectsToggle');
-        const hapticsToggle = document.getElementById('hapticsToggle');
-        const accentColorPicker = document.getElementById('accentColorPicker');
-        soundToggle.checked = feedbackSettings.sound;
-        hapticsToggle.checked = feedbackSettings.haptics;
-        accentColorPicker.value = accentColor;
-        document.getElementById('settingsClose').addEventListener('click', () => { modal.style.display = 'none'; });
-        modal.addEventListener('click', (event) => { if (event.target === modal) modal.style.display = 'none'; });
-        soundToggle.addEventListener('change', () => {
-          feedbackSettings.sound = soundToggle.checked;
-          localStorage.setItem('unire_sound_effects', String(feedbackSettings.sound));
-          provideFeedback();
-        });
-        hapticsToggle.addEventListener('change', () => {
-          feedbackSettings.haptics = hapticsToggle.checked;
-          localStorage.setItem('unire_haptics', String(feedbackSettings.haptics));
-          provideFeedback();
-        });
-        accentColorPicker.addEventListener('input', () => {
-          applyAccentColor(accentColorPicker.value);
-          localStorage.setItem('unire_accent_color', accentColorPicker.value);
-        });
-      }
-
-      function openSettings() {
-        document.getElementById('settingsModal').style.display = 'flex';
-      }
-
-      function setupModes() {
-        const setMode = (mode) => {
-          screenMode.classList.toggle('active', mode === 'screen');
-          keyboardTab.classList.toggle('active', mode === 'manual');
-          const trackpad = document.getElementById('trackpad');
-          if (trackpad) trackpad.style.display = mode === 'manual' ? 'flex' : 'none';
-          if (mode === 'screen') {
-            startScreenUpdates();
-            startCursorUpdates();
-          } else {
-            stopScreenUpdates();
-            stopCursorUpdates();
-          }
-        };
-        switchMode = setMode;
-
-        document.getElementById('screenRefresh').addEventListener('click', refreshScreen);
-        document.getElementById('screenKeyboard').addEventListener('click', () => {
-          screenTextInput.value = '';
-          screenTextInput.focus({ preventScroll: true });
-        });
-        document.getElementById('screenClose').addEventListener('click', () => setMode('manual'));
-        setupScreenTouch();
-        setMode('manual');
-      }
-
-      function refreshScreen() {
-        if (frameRequestInFlight) return;
-        frameRequestInFlight = true;
-        fetch(`/api/screen-image?t=${Date.now()}`, { cache: 'no-store' })
-          .then((response) => {
-            if (!response.ok) throw new Error(`screen ${response.status}`);
-            return response.blob();
-          })
-          .then((blob) => {
-            if (screenObjectUrl) URL.revokeObjectURL(screenObjectUrl);
-            screenObjectUrl = URL.createObjectURL(blob);
-            screenImage.src = screenObjectUrl;
-          })
-          .catch(() => screenStatusOffline())
-          .finally(() => { frameRequestInFlight = false; });
-      }
-
-      function startScreenUpdates() {
-        if (screenTimer) return;
-        refreshScreen();
-        screenTimer = setInterval(refreshScreen, 1500);
-      }
-
-      function stopScreenUpdates() {
-        if (!screenTimer) return;
-        clearInterval(screenTimer);
-        screenTimer = null;
-      }
-
-      function startCursorUpdates() {
-        if (cursorTimer) return;
-        updateCursorPosition();
-        cursorTimer = setInterval(updateCursorPosition, 250);
-      }
-
-      function stopCursorUpdates() {
-        if (!cursorTimer) return;
-        clearInterval(cursorTimer);
-        cursorTimer = null;
-        screenCursor.style.display = 'none';
-      }
-
-      async function updateCursorPosition() {
-        if (cursorRequestInFlight) return;
-        cursorRequestInFlight = true;
-        try {
-          const response = await fetch('/api/cursor', { cache: 'no-store' });
-          if (!response.ok) return;
-          const position = await response.json();
-          latestCursorPosition = position;
-          const imageWidth = Math.max(1, screenImage.naturalWidth);
-          const imageHeight = Math.max(1, screenImage.naturalHeight);
-          const viewportRect = screenViewport.getBoundingClientRect();
-          const isPortrait = window.matchMedia('(orientation: portrait)').matches;
-          const left = isPortrait
-            ? (1 - position.y / imageHeight) * viewportRect.width
-            : (position.x / imageWidth) * viewportRect.width;
-          const top = isPortrait
-            ? (position.x / imageWidth) * viewportRect.height
-            : (position.y / imageHeight) * viewportRect.height;
-          screenCursor.style.left = `${Math.max(0, Math.min(viewportRect.width, left))}px`;
-          screenCursor.style.top = `${Math.max(0, Math.min(viewportRect.height, top))}px`;
-          screenCursor.style.display = 'block';
-        } catch {
-          screenCursor.style.display = 'none';
-        } finally {
-          cursorRequestInFlight = false;
-        }
-      }
-
-      function screenStatusOffline() {
-        streamStatus.classList.add('offline');
-        streamStatus.classList.remove('live');
-      }
-
-      function showTouchIndicator(event) {
-        const rect = screenViewport.getBoundingClientRect();
-        screenTouchIndicator.style.left = `${event.clientX - rect.left}px`;
-        screenTouchIndicator.style.top = `${event.clientY - rect.top}px`;
-        screenTouchIndicator.classList.add('visible');
-      }
-
-      function hideTouchIndicator() {
-        screenTouchIndicator.classList.remove('visible');
-      }
-
-      function setupScreenTouch() {
-        let lastPoint = null;
-        let moved = false;
-        let dragging = false;
-        let dragIntentTimer = null;
-        let dragIntentReady = false;
-        const activePointers = new Set();
-        let rightClickSent = false;
-
-        function screenDelta(currentPoint, previousPoint) {
-          const imageRect = screenImage.getBoundingClientRect();
-          const isPortrait = window.matchMedia('(orientation: portrait)').matches;
-          const visualDx = currentPoint.x - previousPoint.x;
-          const visualDy = currentPoint.y - previousPoint.y;
-          const sourceWidth = Math.max(1, screenImage.naturalWidth);
-          const sourceHeight = Math.max(1, screenImage.naturalHeight);
-
-          if (isPortrait) {
-            // The image is rotated clockwise: visual down maps to source right.
-            return {
-              dx: visualDy * (sourceWidth / Math.max(1, imageRect.height)),
-              dy: -visualDx * (sourceHeight / Math.max(1, imageRect.width))
-            };
-          }
-
-          return {
-            dx: visualDx * (sourceWidth / Math.max(1, imageRect.width)),
-            dy: visualDy * (sourceHeight / Math.max(1, imageRect.height))
-          };
-        }
-
-        function screenPointToDesktop(point) {
-          const imageRect = screenImage.getBoundingClientRect();
-          const sourceWidth = Math.max(1, screenImage.naturalWidth);
-          const sourceHeight = Math.max(1, screenImage.naturalHeight);
-          const x = Math.max(0, Math.min(imageRect.width, point.x - imageRect.left));
-          const y = Math.max(0, Math.min(imageRect.height, point.y - imageRect.top));
-          const isPortrait = window.matchMedia('(orientation: portrait)').matches;
-
-          if (isPortrait) {
-            return {
-              x: Math.round(y * sourceWidth / Math.max(1, imageRect.height)),
-              y: Math.round((1 - x / Math.max(1, imageRect.width)) * sourceHeight)
-            };
-          }
-
-          return {
-            x: Math.round(x * sourceWidth / Math.max(1, imageRect.width)),
-            y: Math.round(y * sourceHeight / Math.max(1, imageRect.height))
-          };
-        }
-
-        function releaseScreenDrag() {
-          if (dragIntentTimer) {
-            clearTimeout(dragIntentTimer);
-            dragIntentTimer = null;
-          }
-          if (dragging && socket && !socket.disconnected) {
-            socket.emit('mouseup', { button: 'left' });
-          }
-          dragging = false;
-          dragIntentReady = false;
-          lastPoint = null;
-        }
-
-        screenViewport.addEventListener('pointerdown', (event) => {
-          event.preventDefault();
-          showTouchIndicator(event);
-          screenViewport.setPointerCapture(event.pointerId);
-          activePointers.add(event.pointerId);
-          if (activePointers.size >= 2) {
-            lastPoint = null;
-            moved = true;
-            dragging = false;
-            if (!rightClickSent && socket && !socket.disconnected) {
-              socket.emit('click', { button: 'right' });
-              rightClickSent = true;
-            }
-            return;
-          }
-          if (latestCursorPosition && socket && !socket.disconnected) {
-            const target = screenPointToDesktop({ x: event.clientX, y: event.clientY });
-            socket.emit('move', {
-              dx: target.x - latestCursorPosition.x,
-              dy: target.y - latestCursorPosition.y
-            });
-            latestCursorPosition = target;
-          }
-          lastPoint = { x: event.clientX, y: event.clientY };
-          moved = false;
-          dragging = false;
-          dragIntentReady = false;
-          dragIntentTimer = setTimeout(() => {
-            dragIntentReady = true;
-          }, 500);
-        });
-
-        screenViewport.addEventListener('pointermove', (event) => {
-          if (!lastPoint || !socket || socket.disconnected) return;
-          event.preventDefault();
-          showTouchIndicator(event);
-          const delta = screenDelta(
-            { x: event.clientX, y: event.clientY },
-            lastPoint
-          );
-          const dx = delta.dx;
-          const dy = delta.dy;
-          lastPoint = { x: event.clientX, y: event.clientY };
-          if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
-            moved = true;
-            if (!dragIntentReady && dragIntentTimer) {
-              clearTimeout(dragIntentTimer);
-              dragIntentTimer = null;
-            }
-            if (dragIntentReady && !dragging) {
-              socket.emit('mousedown', { button: 'left' });
-              dragging = true;
-            }
-            socket.emit('move', { dx: Math.round(dx), dy: Math.round(dy) });
-            if (latestCursorPosition) {
-              latestCursorPosition.x += Math.round(dx);
-              latestCursorPosition.y += Math.round(dy);
-            }
-          }
-        });
-
-        screenViewport.addEventListener('pointerup', (event) => {
-          event.preventDefault();
-          hideTouchIndicator();
-          activePointers.delete(event.pointerId);
-          if (rightClickSent) {
-            if (activePointers.size === 0) rightClickSent = false;
-            return;
-          }
-          if (!lastPoint) return;
-          if (!moved && socket && !socket.disconnected) {
-            socket.emit('click', { button: 'left' });
-          }
-          releaseScreenDrag();
-        });
-
-        screenViewport.addEventListener('pointercancel', (event) => {
-          hideTouchIndicator();
-          activePointers.delete(event.pointerId);
-          releaseScreenDrag();
-          if (activePointers.size === 0) rightClickSent = false;
-        });
-        screenViewport.addEventListener('lostpointercapture', () => {
-          hideTouchIndicator();
-          releaseScreenDrag();
-        });
-        screenTextInput.addEventListener('input', () => {
-          const value = screenTextInput.value;
-          for (const character of value) sendKeyPress(character);
-          screenTextInput.value = '';
-        });
-        screenTextInput.addEventListener('keydown', (event) => {
-          const specialKeys = { Enter: 'Enter', Backspace: 'Backspace', Tab: 'Tab', Escape: 'Escape' };
-          if (specialKeys[event.key]) {
-            event.preventDefault();
-            sendKeyPress(specialKeys[event.key]);
-          }
-        });
-      }
-
-      screenImage.addEventListener('error', () => {
-        streamStatus.classList.add('offline');
-        streamStatus.classList.remove('live');
-      });
-
-      screenImage.addEventListener('load', () => {
-        streamStatus.classList.remove('offline');
-        streamStatus.classList.add('live');
-        const now = performance.now();
-        if (lastFrameAt) {
-          const framesPerSecond = Math.min(60, 1000 / Math.max(1, now - lastFrameAt));
-          streamRate.textContent = `${framesPerSecond.toFixed(1)} fps`;
-        }
-        lastFrameAt = now;
-      });
 
       function initSocket(){
-        socket = io({
-          reconnection: true,
-          reconnectionAttempts: Infinity,
-          reconnectionDelay: 500,
-          reconnectionDelayMax: 5000,
-          timeout: 10000
-        });
+        socket = io();
 
         socket.on('connect', () => {
           statusEl.textContent = 'Connected';
@@ -839,7 +373,9 @@
             cursorIndicator.style.display = 'none';
             
             // Haptic feedback
-            provideFeedback();
+            if (navigator.vibrate) {
+              navigator.vibrate(20);
+            }
           } else {
             // Mouse mode
             isScrolling = false;
@@ -853,7 +389,7 @@
               dragHoldTimer = setTimeout(() => {
                 isDragModeEnabled = true;
                 isDragging = true;
-                if (socket && !socket.disconnected) {
+                if (!socket.disconnected) {
                   socket.emit('mousedown', { button: 'left' });
                 }
                 // Show drag badge
@@ -865,7 +401,7 @@
                     touchArea.appendChild(badge);
                 }
                 badge.style.display = 'inline-block';
-                provideFeedback(20, [20,20,20]);
+                if (navigator.vibrate) navigator.vibrate([20,20,20]);
                 dragHoldTimer = null;
               }, 600); // 500-800ms hold
             }
@@ -962,7 +498,9 @@
             cursorIndicator.style.display = 'none';
             
             // Haptic feedback when entering scroll mode
-            provideFeedback();
+            if (navigator.vibrate) {
+              navigator.vibrate(20);
+            }
             
             // Send initial scroll
             if (!socket || socket.disconnected) return;
@@ -996,7 +534,7 @@
           
           // If dragging, release mouse button
           if (isDragging) {
-            if (socket && !socket.disconnected) {
+            if (!socket.disconnected) {
               socket.emit('mouseup', { button: 'left' });
             }
             isDragging = false;
@@ -1028,7 +566,7 @@
           
           // If dragging, release mouse button
           if (isDragging) {
-            if (socket && !socket.disconnected) {
+            if (!socket.disconnected) {
               socket.emit('mouseup', { button: 'left' });
             }
             isDragging = false;
@@ -1070,7 +608,6 @@
 
         // Initialize keyboard
         buildKeyboard();
-        setupSettings();
         
         // Initialize keyboard tab trackpad - full featured like mouse tab
         const trackpad = document.getElementById('trackpad');
@@ -1117,11 +654,11 @@
               trackpadDragHoldTimer = setTimeout(() => {
                 trackpadIsDragModeEnabled = true;
                 trackpadIsDragging = true;
-                if (socket && !socket.disconnected) socket.emit('mousedown', { button: 'left' });
+                if (!socket.disconnected) socket.emit('mousedown', { button: 'left' });
                 let badge = trackpad.querySelector('.drag-badge');
                 if (!badge) { badge = document.createElement('div'); badge.className = 'drag-badge'; badge.textContent = 'Drag Select'; trackpad.appendChild(badge); }
                 badge.style.display = 'inline-block';
-                provideFeedback(20, [20,20,20]);
+                if (navigator.vibrate) navigator.vibrate([20,20,20]);
                 trackpadDragHoldTimer = null;
               }, 600);
             }
@@ -1153,7 +690,9 @@
               if (trackpadCursor) trackpadCursor.style.display = 'none';
               
               // Haptic feedback
-              provideFeedback();
+              if (navigator.vibrate) {
+                navigator.vibrate(20);
+              }
             } else {
             // Mouse mode
             trackpadIsScrolling = false;
@@ -1261,7 +800,9 @@
               if (trackpadCursor) trackpadCursor.style.display = 'none';
               
               // Haptic feedback when entering scroll mode
-              provideFeedback();
+              if (navigator.vibrate) {
+                navigator.vibrate(20);
+              }
               
               // Send initial scroll
               if (!socket || socket.disconnected) return;
@@ -1297,7 +838,7 @@
             
             // If dragging, release mouse button
             if (trackpadIsDragging) {
-              if (socket && !socket.disconnected) {
+              if (!socket.disconnected) {
                 socket.emit('mouseup', { button: 'left' });
               }
               trackpadIsDragging = false;
@@ -1329,7 +870,7 @@
             
             // If dragging, release mouse button
             if (trackpadIsDragging) {
-              if (socket && !socket.disconnected) {
+              if (!socket.disconnected) {
                 socket.emit('mouseup', { button: 'left' });
               }
               trackpadIsDragging = false;
@@ -1364,9 +905,9 @@
           const ctrlRow = document.createElement('div');
           ctrlRow.className = 'controls-scroll';
           const controls = [
-            'Screen','LeftClick','RightClick','Info',
+            'LeftClick','RightClick','Info',
             'VolumeDown','VolumeUp','BrightnessDown','BrightnessUp',
-            'OpenBrowser','OpenYouTube','Settings'
+            'OpenBrowser','OpenYouTube'
           ];
           controls.forEach(c => createControlKey(c, ctrlRow));
           // arrows
@@ -1389,7 +930,6 @@
           collapsibleSection.style.display = keyboardCollapsed ? 'none' : 'flex';
           collapsibleSection.style.flexDirection = 'column';
           collapsibleSection.style.gap = '4px';
-          keyboardMode.classList.toggle('collapsed', keyboardCollapsed);
           
           // F1 row with collapse button + F1-F7
           const fRow1 = document.createElement('div');
@@ -1399,18 +939,15 @@
           const collapseBtn = document.createElement('button');
           collapseBtn.className = 'key key-desktop';
           collapseBtn.dataset.key = 'Collapse';
-          collapseBtn.setAttribute('aria-expanded', String(!keyboardCollapsed));
           collapseBtn.innerHTML = keyboardCollapsed ? '▼' : '▲';
           collapseBtn.title = keyboardCollapsed ? 'Expand keyboard' : 'Collapse keyboard';
-          collapseBtn.addEventListener('pointerdown', (e) => {
+          collapseBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
-            provideFeedback();
+            if (navigator.vibrate) navigator.vibrate(20);
             keyboardCollapsed = !keyboardCollapsed;
             collapseBtn.innerHTML = keyboardCollapsed ? '▼' : '▲';
             collapseBtn.title = keyboardCollapsed ? 'Expand keyboard' : 'Collapse keyboard';
-            collapseBtn.setAttribute('aria-expanded', String(!keyboardCollapsed));
             collapsibleSection.style.display = keyboardCollapsed ? 'none' : 'flex';
-            keyboardMode.classList.toggle('collapsed', keyboardCollapsed);
           });
           fRow1.appendChild(collapseBtn);
           ['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7'].forEach(key => {
@@ -1527,14 +1064,12 @@
           const symbolBtn = spaceRow.querySelector('.key[data-key="?123"]');
           if (symbolBtn) {
             symbolBtn.classList.toggle('active', symbolMode);
-            symbolBtn.setAttribute('aria-pressed', String(symbolMode));
           }
           
           // Add special styling for caps button (in letter row only)
           const capsBtn = document.querySelector('.keyboard-row.bottom .key[data-key="Caps"]');
           if (capsBtn) {
             capsBtn.classList.toggle('active', capsMode);
-            capsBtn.setAttribute('aria-pressed', String(capsMode));
           }
         }
         
@@ -1543,12 +1078,15 @@
           btn.className = 'key';
           btn.textContent = getKeyDisplay(key);
           btn.dataset.key = key; // Store key value for easy querying
-          btn.setAttribute('aria-pressed', 'false');
           
           // Add touch event handlers with haptic and visual feedback
-          btn.addEventListener('pointerdown', (e) => {
+          btn.addEventListener('touchstart', (e) => {
             e.preventDefault();
-            provideFeedback();
+            
+            // Haptic feedback
+            if (navigator.vibrate) {
+              navigator.vibrate(20);
+            }
             
             // Visual feedback
             btn.style.background = '#3a3a3a';
@@ -1567,15 +1105,17 @@
               return;
             }
             
-            // Modifier keys are held until their pointer is released.
+            // Check if this is a modifier key for shortcuts
             const isModifier = ['Ctrl', 'Alt', 'Shift', 'Windows'].includes(key);
             
             if (isModifier) {
+              // Toggle modifier state
               const modifierKey = key.toLowerCase();
-              modifierKeys[modifierKey] = true;
-              btn.classList.add('active');
-              btn.setAttribute('aria-pressed', 'true');
-              sendKeyPress(key, { action: 'down' });
+              modifierKeys[modifierKey] = !modifierKeys[modifierKey];
+              btn.classList.toggle('active', modifierKeys[modifierKey]);
+              
+              // Send the modifier press
+            sendKeyPress(key);
               return;
             }
             
@@ -1591,14 +1131,8 @@
             // This allows for keyboard shortcuts like Ctrl+Z, Alt+Tab, Win+R, etc.
           });
           
-          btn.addEventListener('pointerup', (e) => {
+          btn.addEventListener('touchend', (e) => {
             e.preventDefault();
-            if (['Ctrl', 'Alt', 'Shift', 'Windows'].includes(key)) {
-              modifierKeys[key.toLowerCase()] = false;
-              btn.classList.remove('active');
-              btn.setAttribute('aria-pressed', 'false');
-              sendKeyPress(key, { action: 'up' });
-            }
             // Reset visual feedback - preserve active state for green buttons
             setTimeout(() => {
               if (!btn.classList.contains('active')) {
@@ -1609,14 +1143,6 @@
               }
               btn.style.transform = '';
             }, 150);
-          });
-          btn.addEventListener('pointercancel', () => {
-            if (['Ctrl', 'Alt', 'Shift', 'Windows'].includes(key)) {
-              modifierKeys[key.toLowerCase()] = false;
-              btn.classList.remove('active');
-              btn.setAttribute('aria-pressed', 'false');
-              sendKeyPress(key, { action: 'up' });
-            }
           });
           
           parent.appendChild(btn);
@@ -1633,28 +1159,7 @@
           icon.setAttribute('viewBox', '0 0 24 24');
           icon.classList.add('icon');
           const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-          if (type === 'Settings') {
-            path.setAttribute('d', 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0-5v2m0 14v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M3 12h2m14 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4');
-            path.setAttribute('fill', 'none');
-            path.setAttribute('stroke', 'currentColor');
-            path.setAttribute('stroke-width', '2');
-            path.setAttribute('stroke-linecap', 'round');
-            icon.appendChild(path);
-            const label = document.createElement('span');
-            label.textContent = 'Settings';
-            span.appendChild(icon); span.appendChild(label);
-          } else if (type === 'Screen') {
-            path.setAttribute('d', 'M4 5h16v11H4zM8 20h8M12 16v4');
-            path.setAttribute('fill', 'none');
-            path.setAttribute('stroke', 'currentColor');
-            path.setAttribute('stroke-width', '2');
-            path.setAttribute('stroke-linecap', 'round');
-            path.setAttribute('stroke-linejoin', 'round');
-            icon.appendChild(path);
-            const label = document.createElement('span');
-            label.textContent = 'Screen';
-            span.appendChild(icon); span.appendChild(label);
-          } else if (type === 'LeftClick') {
+          if (type === 'LeftClick') {
             // Left arrow
             path.setAttribute('d', 'M14 7l-5 5 5 5');
             path.setAttribute('fill', 'none');
@@ -1729,14 +1234,11 @@
           }
           btn.appendChild(span);
           btn.dataset.key = type;
-          if (type === 'Settings') btn.dataset.settingsOpen = 'true';
-          const onPress = () => { btn.classList.add('pressed'); provideFeedback(15); };
+          const onPress = () => { btn.classList.add('pressed'); if (navigator.vibrate) navigator.vibrate(15); };
           const onRelease = () => { setTimeout(()=> btn.classList.remove('pressed'), 120); };
-          btn.addEventListener('pointerdown', (e) => {
+          btn.addEventListener('touchstart', (e) => {
             e.preventDefault();
             onPress();
-            if (type === 'Screen') { if (switchMode) switchMode('screen'); return; }
-            if (type === 'Settings') { openSettings(); return; }
             if (!socket || socket.disconnected) return;
             if (type === 'LeftClick') { socket.emit('click', { button: 'left' }); return; }
             if (type === 'RightClick') { socket.emit('click', { button: 'right' }); return; }
@@ -1744,8 +1246,8 @@
             // App actions
             socket.emit('action', { type });
           });
-          btn.addEventListener('pointerup', (e) => { e.preventDefault(); onRelease(); });
-          btn.addEventListener('pointercancel', (e) => { e.preventDefault(); onRelease(); });
+          btn.addEventListener('touchend', (e) => { e.preventDefault(); onRelease(); });
+          btn.addEventListener('touchcancel', (e) => { e.preventDefault(); onRelease(); });
           // Accessibility titles
           btn.title = type === 'LeftClick' ? 'Left Click' : type === 'RightClick' ? 'Right Click' : 'Info';
           parent.appendChild(btn);
@@ -1825,7 +1327,7 @@
         
         // Tab switching is handled above
         
-        function sendKeyPress(key, options = {}) {
+        function sendKeyPress(key) {
           if (!socket || socket.disconnected) return;
           
           // Map special keys to nut-js Key enum values
@@ -1865,7 +1367,7 @@
           
           if (keyValue === '') return; // Skip empty keys
           
-          socket.emit('keyboard', { key: keyValue, ...options });
+          socket.emit('keyboard', { key: keyValue });
         }
         
         function updateModifierButton(key) {

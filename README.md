@@ -97,6 +97,10 @@ This runs only the Express server without the Electron UI (useful for headless s
 1. **Launch the application** using `npm start`
 2. **Scan the QR code** displayed in the window with your mobile device
 
+   Make sure the phone and computer are connected to the same Wi-Fi network. If
+   Windows Defender Firewall prompts for network access, allow the application
+   on private networks; otherwise port 8000 may be unreachable from the phone.
+
    ![QR Code Window](./public/preview-qr.png)
 
 3. **Access the remote control interface** on your mobile browser

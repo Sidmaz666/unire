@@ -11,6 +11,7 @@ import { fileURLToPath } from "url";
 import cors from "cors";
 import os from "os";
 import { exec } from "child_process";
+import screenshot from "screenshot-desktop";
 
 // ===== nut-js imports =====
 import { mouse, Button, Point, keyboard, Key } from "@nut-tree-fork/nut-js";
@@ -21,6 +22,8 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = http.createServer(app);
 const io = new IOServer(server);
+let activePort = null;
+let screenCaptureInFlight = null;
 
 // Basic middlewares
 app.use(express.json());
@@ -58,15 +61,32 @@ const SESSION_EXPIRY_MS = 1000 * 60 * 60 * 6; // 6 hours
 // ===== util functions =====
 function getNetworkIP() {
   const interfaces = os.networkInterfaces();
-  
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name]) {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        return iface.address;
+  const candidates = [];
+  const isVirtualAdapter = (name) =>
+    /virtualbox|vboxnet|vmware|vmnet|hyper-v|veth|docker|wsl|tun|tap|utun|ppp|loopback|bluetooth/i.test(name);
+  const isPhysicalAdapter = (name) =>
+    /wi-?fi|wireless|wlan|ethernet|^eth\d|^en\d|^wlp|^enp|^wlx/i.test(name);
+
+  for (const [name, entries] of Object.entries(interfaces)) {
+    if (isVirtualAdapter(name)) continue;
+
+    for (const iface of entries || []) {
+      if (iface.family !== 'IPv4' || iface.internal || iface.address.startsWith('169.254.')) {
+        continue;
       }
+
+      const isHomeLanAddress = iface.address.startsWith('192.168.') ||
+        iface.address.startsWith('10.') ||
+        /^172\.(1[6-9]|2\d|3[0-1])\./.test(iface.address);
+      const physical = isPhysicalAdapter(name);
+      const priority = physical && iface.address.startsWith('192.168.') ? 0 :
+        physical && isHomeLanAddress ? 1 : isHomeLanAddress ? 2 : 3;
+      candidates.push({ address: iface.address, priority });
     }
   }
-  return 'localhost';
+
+  candidates.sort((a, b) => a.priority - b.priority);
+  return candidates[0]?.address ?? 'localhost';
 }
 
 function now() {
@@ -123,7 +143,7 @@ app.get("/qr", async (req, res) => {
   const token = createQrToken();
   // build url that phone should open - use network IP for WiFi access
   const networkIP = getNetworkIP();
-  const port = process.env.PORT || 8000;
+  const port = activePort ?? process.env.PORT ?? 8000;
   const base = `http://${networkIP}:${port}`;
   const url = `${base}/auth?token=${token}`;
 
@@ -275,6 +295,39 @@ app.get("/api/screen", (req, res) => {
   });
 });
 
+app.get("/api/cursor", async (req, res) => {
+  if (!verifySession(req.cookies?.sid)) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  try {
+    const position = await mouse.getPosition();
+    res.json({ x: position.x, y: position.y });
+  } catch (err) {
+    console.error("[cursor] error", err);
+    res.status(503).json({ error: "cursor position unavailable" });
+  }
+});
+
+app.get("/api/screen-image", async (req, res) => {
+  if (!verifySession(req.cookies?.sid)) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  try {
+    if (!screenCaptureInFlight) {
+      screenCaptureInFlight = screenshot({ format: "png" }).finally(() => {
+        screenCaptureInFlight = null;
+      });
+    }
+    const image = await screenCaptureInFlight;
+    res.type("png").send(image);
+  } catch (err) {
+    console.error("[screen-image] error", err);
+    res.status(503).json({ error: "screen capture unavailable" });
+  }
+});
+
 // ===== Socket.IO for remote control =====
 // We'll use a single namespace. Only allow sockets from authenticated users (based on cookie).
 io.use((socket, next) => {
@@ -305,6 +358,7 @@ io.on("connection", (socket) => {
     shift: false,
     windows: false
   };
+  let leftMouseButtonDown = false;
   
   // Initialize position once on connection
   mouse.getPosition().then(pos => {
@@ -378,6 +432,7 @@ io.on("connection", (socket) => {
       const btn = (data && data.button) ? data.button : "left";
       if (btn === "left") {
         await mouse.pressButton(Button.LEFT);
+        leftMouseButtonDown = true;
       } else if (btn === "right") {
         await mouse.pressButton(Button.RIGHT);
       } else {
@@ -394,6 +449,7 @@ io.on("connection", (socket) => {
       const btn = (data && data.button) ? data.button : "left";
       if (btn === "left") {
         await mouse.releaseButton(Button.LEFT);
+        leftMouseButtonDown = false;
       } else if (btn === "right") {
         await mouse.releaseButton(Button.RIGHT);
       } else {
@@ -518,34 +574,38 @@ io.on("connection", (socket) => {
         'F12': Key.F12
       };
       
-      // Handle modifier keys - toggle state
+      // Handle modifier keys as real press/release events for held shortcuts.
       if (keyValue === 'Ctrl' || keyValue === 'Control') {
-        activeModifiers.ctrl = !activeModifiers.ctrl;
-        if (activeModifiers.ctrl) {
+        const isDown = data.action ? data.action === 'down' : !activeModifiers.ctrl;
+        activeModifiers.ctrl = isDown;
+        if (isDown) {
           await keyboard.pressKey(Key.LeftControl);
         } else {
           await keyboard.releaseKey(Key.LeftControl);
         }
         return;
       } else if (keyValue === 'Alt') {
-        activeModifiers.alt = !activeModifiers.alt;
-        if (activeModifiers.alt) {
+        const isDown = data.action ? data.action === 'down' : !activeModifiers.alt;
+        activeModifiers.alt = isDown;
+        if (isDown) {
           await keyboard.pressKey(Key.LeftAlt);
         } else {
           await keyboard.releaseKey(Key.LeftAlt);
         }
         return;
       } else if (keyValue === 'Shift') {
-        activeModifiers.shift = !activeModifiers.shift;
-        if (activeModifiers.shift) {
+        const isDown = data.action ? data.action === 'down' : !activeModifiers.shift;
+        activeModifiers.shift = isDown;
+        if (isDown) {
           await keyboard.pressKey(Key.LeftShift);
         } else {
           await keyboard.releaseKey(Key.LeftShift);
         }
         return;
       } else if (keyValue === 'Windows' || keyValue === 'Super') {
-        activeModifiers.windows = !activeModifiers.windows;
-        if (activeModifiers.windows) {
+        const isDown = data.action ? data.action === 'down' : !activeModifiers.windows;
+        activeModifiers.windows = isDown;
+        if (isDown) {
           await keyboard.pressKey(Key.LeftSuper);
         } else {
           await keyboard.releaseKey(Key.LeftSuper);
@@ -562,20 +622,8 @@ io.on("connection", (socket) => {
       } else if (keyValue.length === 1) {
         // Single character - handle with active modifiers
         if (activeModifiers.ctrl || activeModifiers.alt || activeModifiers.shift || activeModifiers.windows) {
-          // Press modifiers
-          if (activeModifiers.ctrl) await keyboard.pressKey(Key.LeftControl);
-          if (activeModifiers.alt) await keyboard.pressKey(Key.LeftAlt);
-          if (activeModifiers.shift) await keyboard.pressKey(Key.LeftShift);
-          if (activeModifiers.windows) await keyboard.pressKey(Key.LeftSuper);
-          
-          // Type the character
+          // Modifier keys are already held by their explicit down events.
           await keyboard.type(keyValue);
-          
-          // Release modifiers
-          if (activeModifiers.windows) await keyboard.releaseKey(Key.LeftSuper);
-          if (activeModifiers.shift) await keyboard.releaseKey(Key.LeftShift);
-          if (activeModifiers.alt) await keyboard.releaseKey(Key.LeftAlt);
-          if (activeModifiers.ctrl) await keyboard.releaseKey(Key.LeftControl);
         } else {
           // No modifiers, just type normally
           await keyboard.type(keyValue);
@@ -588,6 +636,22 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     console.log("client disconnected", socket.id);
+    if (leftMouseButtonDown) {
+      mouse.releaseButton(Button.LEFT).catch(() => {});
+      leftMouseButtonDown = false;
+    }
+    const heldModifiers = [
+      ['ctrl', Key.LeftControl],
+      ['alt', Key.LeftAlt],
+      ['shift', Key.LeftShift],
+      ['windows', Key.LeftSuper]
+    ];
+    for (const [name, key] of heldModifiers) {
+      if (activeModifiers[name]) {
+        keyboard.releaseKey(key).catch(() => {});
+        activeModifiers[name] = false;
+      }
+    }
     clearInterval(syncInterval);
   });
 });
@@ -595,6 +659,7 @@ io.on("connection", (socket) => {
 // Function to start server (can be called from Electron or standalone)
 export function startServer(port = null) {
   const PORT = port || process.env.PORT || 8000;
+  activePort = PORT;
   const networkIP = getNetworkIP();
 
   return new Promise((resolve) => {
