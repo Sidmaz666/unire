@@ -118,9 +118,15 @@
 
     async function acquireAudio(muted) {
       const mode = await window.unireHost.setLoopbackMode(muted);
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      // Raw system sound: voice processing (echo cancel, noise suppression, gain) only adds
+      // delay and damages music.
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      });
       stream.getVideoTracks().forEach(track => track.stop());
       if (!stream.getAudioTracks().length) throw new Error('System audio capture is not supported on this computer');
+      stream.getAudioTracks().forEach(track => { track.contentHint = 'music'; });
       if (muted) socket.emit('host-audio:support', { muteSupported: mode === 'loopbackWithMute' });
       return stream;
     }
@@ -160,9 +166,12 @@
     }
 
     function tuneOpus(description) {
-      // Stereo, high-bitrate Opus so music and videos sound right on the phone.
-      const sdp = description.sdp.replace(/a=fmtp:(\d+) (.*useinbandfec=1.*)/g,
-        (line, pt, params) => `a=fmtp:${pt} ${params};stereo=1;sprop-stereo=1;maxaveragebitrate=256000`);
+      // Stereo, high-bitrate Opus in 10 ms packets (half the default) for low latency,
+      // with DTX off so quiet passages never pause the stream.
+      const sdp = description.sdp
+        .replace(/a=ptime:\d+\r\n/g, '')
+        .replace(/a=fmtp:(\d+) ([^\r\n]*useinbandfec=1[^\r\n]*)/g, (line, pt, params) =>
+          `a=fmtp:${pt} ${params};stereo=1;sprop-stereo=1;maxaveragebitrate=256000;usedtx=0\r\na=ptime:10`);
       return { type: description.type, sdp };
     }
 

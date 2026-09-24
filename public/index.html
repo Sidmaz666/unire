@@ -353,6 +353,10 @@
       let audioPeer = null;
       let audioPendingCandidates = [];
       let audioStarting = false;
+      let audioReceiver = null;
+      let screenVideoReceiver = null;
+      let avSyncTimer = null;
+      let lastVideoBuffer = null;
       const hostAudioState = { muted: false, muteSupported: true };
       const routedAudio = document.getElementById('routedAudio');
       let toastTimer = null;
@@ -621,7 +625,46 @@
         toastTimer = setTimeout(() => toast.classList.remove('visible'), 2800);
       }
 
+      // Keep the receive buffers as small as the network allows.
+      function minimizeReceiverDelay(receiver) {
+        try { receiver.jitterBufferTarget = 0; } catch {}
+        try { receiver.playoutDelayHint = 0; } catch {}
+      }
+
+      // Audio and video use separate connections; while the screen view is open, hold audio
+      // back by exactly the video's current buffer delay so sound matches the picture.
+      // Without the screen view, audio runs at minimum delay.
+      async function syncAudioToVideo() {
+        if (!audioReceiver) return;
+        let target = 0;
+        if (rtcActive && screenVideoReceiver) {
+          try {
+            const stats = await screenVideoReceiver.getStats();
+            stats.forEach((report) => {
+              if (report.type !== 'inbound-rtp' || report.kind !== 'video') return;
+              const sample = { delay: report.jitterBufferDelay, count: report.jitterBufferEmittedCount };
+              if (lastVideoBuffer && sample.count > lastVideoBuffer.count) {
+                target = 1000 * (sample.delay - lastVideoBuffer.delay) / (sample.count - lastVideoBuffer.count);
+              }
+              lastVideoBuffer = sample;
+            });
+          } catch {}
+        } else {
+          lastVideoBuffer = null;
+        }
+        try { audioReceiver.jitterBufferTarget = Math.max(0, Math.min(400, Math.round(target))); } catch {}
+      }
+
+      function startAvSync() {
+        clearInterval(avSyncTimer);
+        avSyncTimer = setInterval(syncAudioToVideo, 1000);
+      }
+
       function closeAudioPeer() {
+        clearInterval(avSyncTimer);
+        avSyncTimer = null;
+        audioReceiver = null;
+        lastVideoBuffer = null;
         if (audioPeer) {
           audioPeer.ontrack = null;
           audioPeer.onicecandidate = null;
@@ -678,6 +721,9 @@
               if (event.candidate) socket.emit('rtc:signal', { kind: 'audio', candidate: event.candidate });
             };
             pc.ontrack = (event) => {
+              audioReceiver = event.receiver;
+              minimizeReceiverDelay(event.receiver);
+              startAvSync();
               routedAudio.srcObject = event.streams[0] || new MediaStream([event.track]);
               routedAudio.muted = false;
               routedAudio.play().catch(() => showToast('Tap Audio again to allow sound on this device'));
@@ -773,6 +819,7 @@
         screenVideo.classList.remove('ready');
         if (notifyServer && socket && socket.connected) socket.emit('rtc:stop');
         rtcActive = false;
+        screenVideoReceiver = null;
       }
 
       function fallBackToImageStream(reason) {
@@ -809,6 +856,8 @@
               if (event.candidate) socket.emit('rtc:signal', { candidate: event.candidate });
             };
             pc.ontrack = (event) => {
+              screenVideoReceiver = event.receiver;
+              minimizeReceiverDelay(event.receiver);
               if (screenVideo.srcObject !== event.streams[0]) {
                 screenVideo.srcObject = event.streams[0] || new MediaStream([event.track]);
                 screenVideo.play().catch(() => {});
