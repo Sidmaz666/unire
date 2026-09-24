@@ -350,7 +350,7 @@ app.get("/screen-host", (req, res) => {
   if (!screenHost || req.query.token !== screenHost.token) {
     return res.status(404).end();
   }
-  res.sendFile(path.join(__dirname, "screen-host.html"));
+  res.sendFile(path.join(__dirname, "electron", "screen-host.html"));
 });
 
 async function captureScreenFrame() {

@@ -2,7 +2,7 @@
 
 A cross-platform desktop remote control application that allows you to control your computer using your mobile device via QR code authentication. Built with Electron, Express, and Socket.IO.
 
-![Unire Remote Preview](./public/preview.png)
+![Unire Remote Preview](./docs/screenshots/preview.png)
 
 ## 📋 Table of Contents
 
@@ -24,7 +24,9 @@ A cross-platform desktop remote control application that allows you to control y
 - **Mouse Control**: Touch-based trackpad with precise cursor movement
 - **Keyboard Input**: Full virtual keyboard with special keys and shortcuts support
 - **Cross-Platform Desktop**: Works on Windows, macOS, and Linux
-- **Real-Time Communication**: WebSocket-based real-time control using Socket.IO
+- **Live Screen View**: Watch and control the desktop from your phone over WebRTC (hardware-encoded video, up to 60 fps), rotated to fill the screen in portrait
+- **Audio to Phone**: Optionally play computer audio on the phone (Windows and supported Linux setups; macOS does not allow system audio capture)
+- **Low-Latency Input**: Mouse moves and scrolls use an unordered WebRTC data channel, clicks and keys a reliable one, with Socket.IO as automatic fallback
 - **Session Management**: Secure session-based authentication with 6-hour expiry
 - **System Tray Integration**: Runs in the background with system tray icon
 - **Network IP Detection**: Automatically detects and displays network IP for mobile access
@@ -101,11 +103,11 @@ This runs only the Express server without the Electron UI (useful for headless s
    Windows Defender Firewall prompts for network access, allow the application
    on private networks; otherwise port 8000 may be unreachable from the phone.
 
-   ![QR Code Window](./public/preview-qr.png)
+   ![QR Code Window](./docs/screenshots/preview-qr.png)
 
 3. **Access the remote control interface** on your mobile browser
 
-   ![Remote Control Interface](./public/preview-remote.png)
+   ![Remote Control Interface](./docs/screenshots/preview-remote.png)
 
 4. **Control your computer** using:
    - **Touchpad**: Touch and drag to move the cursor
@@ -157,16 +159,19 @@ npm run rebuild:clean
 
 ```
 unire/
-├── electron-main.js      # Electron main process (app entry point)
-├── index.js              # Express server and Socket.IO handlers
-├── package.json          # Project configuration and dependencies
-├── data.sqlite3          # SQLite database (created at runtime)
-├── public/               # Static assets
-│   ├── index.html        # Mobile remote control UI
-│   ├── icon.png          # Application icon
-│   ├── icon.ico          # Windows icon
-│   └── icon.icns         # macOS icon
-└── dist-binaries/        # Build output directory (created during build)
+├── electron-main.js             # Electron main process (app entry point)
+├── index.js                     # Express server, Socket.IO handlers, WebRTC signalling
+├── package.json                 # Project configuration and dependencies
+├── electron/
+│   ├── screen-host.html         # Hidden window: screen/audio capture, WebRTC peers
+│   └── screen-host-preload.cjs  # Forwards data-channel input to the main process
+├── public/                      # Served to the phone
+│   ├── index.html               # Mobile remote control UI
+│   ├── icon.png                 # Application icon
+│   ├── icon.ico                 # Windows icon
+│   └── icon.icns                # macOS icon
+├── docs/screenshots/            # README images
+└── dist-binaries/               # Build output (created during build, not committed)
 ```
 
 ## 🏗️ Building
@@ -183,7 +188,7 @@ Generates:
 
 Output: `dist-binaries/`
 
-![Build Output](./public/preview-build.png)
+![Build Output](./docs/screenshots/preview-build.png)
 
 ### Building for macOS
 
@@ -237,7 +242,7 @@ The application uses `better-sqlite3`, a native Node.js module. To ensure compat
 
 ### Core Technologies
 
-- **Electron** (^32.0.0): Cross-platform desktop application framework
+- **Electron** (^44.2.0): Cross-platform desktop application framework, desktop capture and WebRTC
 - **Express** (^5.1.0): Web server framework
 - **Socket.IO** (^4.8.1): Real-time bidirectional communication
 - **better-sqlite3** (^12.4.1): Fast SQLite database
@@ -246,14 +251,15 @@ The application uses `better-sqlite3`, a native Node.js module. To ensure compat
 ### Additional Libraries
 
 - **qrcode** (^1.5.4): QR code generation
+- **screenshot-desktop** (^1.15.6): Screen capture fallback for the standalone server
 - **uuid** (^13.0.0): Unique identifier generation
 - **cookie-parser**: Cookie parsing middleware
 - **cors**: Cross-origin resource sharing
 
 ### Development Tools
 
-- **electron-builder** (^24.13.3): Application packaging and distribution
-- **electron-rebuild** (^3.2.9): Native module rebuilding
+- **electron-builder** (^26.15.3): Application packaging and distribution
+- **@electron/rebuild** (^4.2.0): Native module rebuilding
 - **nodemon** (^3.1.10): Auto-restart during development
 
 ## ⚙️ Configuration
@@ -261,6 +267,7 @@ The application uses `better-sqlite3`, a native Node.js module. To ensure compat
 ### Environment Variables
 
 - `UNIRE_DATA_DIR`: Custom directory for database storage (defaults to Electron's `userData` directory)
+- `PORT`: Server port (defaults to `8000`)
 
 ### Database
 

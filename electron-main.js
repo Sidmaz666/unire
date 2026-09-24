@@ -70,7 +70,7 @@ function ensureHostWindow() {
         contextIsolation: true,
         nodeIntegration: false,
         backgroundThrottling: false,
-        preload: join(__dirname, 'screen-host-preload.cjs')
+        preload: join(__dirname, 'electron', 'screen-host-preload.cjs')
       }
     });
     hostWindow.on('closed', () => {
