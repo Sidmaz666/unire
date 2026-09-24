@@ -415,6 +415,27 @@ io.use((socket, next) => {
   return next();
 });
 
+const REMOTE_INPUT_EVENTS = new Set([
+  "move", "moveTo", "click", "mousedown", "mouseup", "scroll", "keyboard", "action"
+]);
+
+// Input that arrived over a viewer's WebRTC data channel (relayed by the Electron host
+// window). It runs through the same handlers as that viewer's socket events, so cursor
+// and modifier state stay shared between both transports.
+export function dispatchRemoteInput(viewerId, message) {
+  let parsed;
+  try {
+    parsed = typeof message === "string" ? JSON.parse(message) : message;
+  } catch {
+    return;
+  }
+  const event = parsed?.e;
+  if (!REMOTE_INPUT_EVENTS.has(event)) return;
+  const viewerSocket = io.sockets.sockets.get(viewerId);
+  if (!viewerSocket || viewerSocket.data.isScreenHost) return;
+  for (const listener of viewerSocket.listeners(event)) listener(parsed.d);
+}
+
 function registerScreenHost(socket) {
   screenHostSocket = socket;
   for (const waiter of [...screenHostWaiters]) waiter(socket);
@@ -424,6 +445,9 @@ function registerScreenHost(socket) {
   });
   socket.on("rtc:error", ({ to, message } = {}) => {
     if (to) io.to(to).emit("rtc:error", { message });
+  });
+  socket.on("input:signal", ({ to, data } = {}) => {
+    if (to) io.to(to).emit("input:signal", data);
   });
   socket.on("disconnect", () => {
     if (screenHostSocket === socket) screenHostSocket = null;
@@ -592,6 +616,23 @@ io.on("connection", (socket) => {
 
   socket.on("rtc:stop", () => {
     if (screenHostSocket) screenHostSocket.emit("rtc:stop", { viewerId: socket.id });
+  });
+
+  // Low-latency input over WebRTC data channels (signalled through the screen host).
+  socket.on("input:start", async (_options, ack) => {
+    const reply = typeof ack === "function" ? ack : () => {};
+    if (!screenHost) return reply({ ok: false, reason: "unsupported" });
+    try {
+      if (!screenHostSocket) screenHost.ensure();
+      await waitForScreenHost(10000);
+      reply({ ok: true });
+    } catch {
+      reply({ ok: false, reason: "host unavailable" });
+    }
+  });
+
+  socket.on("input:signal", (data) => {
+    if (screenHostSocket && data) screenHostSocket.emit("input:signal", { from: socket.id, data });
   });
 
   socket.on("click", async (data) => {
@@ -821,7 +862,10 @@ io.on("connection", (socket) => {
     console.log("client disconnected", socket.id);
     screenStreaming = false;
     clearTimeout(resyncTimer);
-    if (screenHostSocket) screenHostSocket.emit("rtc:stop", { viewerId: socket.id });
+    if (screenHostSocket) {
+      screenHostSocket.emit("rtc:stop", { viewerId: socket.id });
+      screenHostSocket.emit("input:stop", { viewerId: socket.id });
+    }
     if (leftMouseButtonDown) {
       mouse.releaseButton(Button.LEFT).catch(() => {});
       leftMouseButtonDown = false;

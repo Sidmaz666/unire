@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, desktopCapturer, screen, systemPreferences } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, desktopCapturer, screen, systemPreferences, ipcMain } from 'electron';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { randomUUID } from 'crypto';
@@ -66,7 +66,12 @@ function ensureHostWindow() {
       width: 320,
       height: 240,
       skipTaskbar: true,
-      webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false }
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        backgroundThrottling: false,
+        preload: join(__dirname, 'screen-host-preload.cjs')
+      }
     });
     hostWindow.on('closed', () => {
       hostWindow = null;
@@ -225,10 +230,14 @@ app.whenReady().then(async () => {
     process.env.UNIRE_DATA_DIR = app.getPath('userData');
     
     // Now import index.js - database will use the correct path
-    const { startServer: importedStartServer, setScreenCapturer, setScreenHost } = await import('./index.js');
+    const { startServer: importedStartServer, setScreenCapturer, setScreenHost, dispatchRemoteInput } = await import('./index.js');
     startServer = importedStartServer;
     setScreenCapturer(captureDesktop);
     setScreenHost({ token: screenHostToken, ensure: ensureHostWindow, getDesktopSize });
+    ipcMain.on('unire:input', (event, viewerId, message) => {
+      if (!hostWindow || event.sender !== hostWindow.webContents) return;
+      dispatchRemoteInput(viewerId, message);
+    });
 
     // macOS requires Screen Recording permission; asking early triggers the system prompt.
     if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('screen') !== 'granted') {

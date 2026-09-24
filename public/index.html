@@ -761,6 +761,98 @@
       screenVideo.addEventListener('resize', layoutScreenImage);
       screenVideo.addEventListener('playing', () => { if (rtcActive) markStreamLive(); });
 
+      // ---- Low-latency input over WebRTC data channels ----
+      // Moves/scrolls use an unordered, no-retransmit channel so a lost Wi-Fi packet is
+      // skipped instead of stalling everything behind it (TCP head-of-line blocking).
+      // Clicks and keys use a reliable ordered channel. Socket.io stays as fallback.
+      let inputPeer = null;
+      let inputFast = null;
+      let inputReliable = null;
+      let inputPendingCandidates = [];
+      let inputRtcUnsupported = !window.RTCPeerConnection;
+      let inputRetryTimer = null;
+      const FAST_INPUT_EVENTS = new Set(['move', 'scroll']);
+
+      function sendInput(event, data) {
+        const channel = FAST_INPUT_EVENTS.has(event) ? inputFast : inputReliable;
+        if (channel && channel.readyState === 'open') {
+          try {
+            channel.send(JSON.stringify({ e: event, d: data }));
+            return;
+          } catch {}
+        }
+        if (socket && socket.connected) socket.emit(event, data);
+      }
+
+      function closeInputChannel() {
+        clearTimeout(inputRetryTimer);
+        inputRetryTimer = null;
+        if (inputPeer) {
+          inputPeer.onicecandidate = null;
+          inputPeer.onconnectionstatechange = null;
+          inputPeer.close();
+        }
+        inputPeer = null;
+        inputFast = null;
+        inputReliable = null;
+        inputPendingCandidates = [];
+      }
+
+      function scheduleInputRetry() {
+        clearTimeout(inputRetryTimer);
+        inputRetryTimer = setTimeout(startInputChannel, 5000);
+      }
+
+      function startInputChannel() {
+        if (inputRtcUnsupported || !socket || !socket.connected) return;
+        closeInputChannel();
+        socket.emit('input:start', {}, async (reply) => {
+          if (!reply?.ok) {
+            if (reply?.reason === 'unsupported') inputRtcUnsupported = true;
+            else scheduleInputRetry();
+            return;
+          }
+          try {
+            const pc = new RTCPeerConnection({ iceServers: [] });
+            inputPeer = pc;
+            inputFast = pc.createDataChannel('input-fast', { ordered: false, maxRetransmits: 0 });
+            inputReliable = pc.createDataChannel('input', { ordered: true });
+            pc.onicecandidate = (event) => {
+              if (event.candidate) socket.emit('input:signal', { candidate: event.candidate });
+            };
+            pc.onconnectionstatechange = () => {
+              if (pc !== inputPeer) return;
+              if (['failed', 'closed'].includes(pc.connectionState)) {
+                closeInputChannel();
+                scheduleInputRetry();
+              }
+            };
+            await pc.setLocalDescription(await pc.createOffer());
+            socket.emit('input:signal', { sdp: pc.localDescription });
+          } catch {
+            closeInputChannel();
+            inputRtcUnsupported = true;
+          }
+        });
+      }
+
+      async function handleInputSignal(data) {
+        if (!inputPeer || !data) return;
+        try {
+          if (data.sdp) {
+            await inputPeer.setRemoteDescription(data.sdp);
+            for (const candidate of inputPendingCandidates) await inputPeer.addIceCandidate(candidate).catch(() => {});
+            inputPendingCandidates = [];
+          } else if (data.candidate) {
+            if (inputPeer.remoteDescription) await inputPeer.addIceCandidate(data.candidate).catch(() => {});
+            else inputPendingCandidates.push(data.candidate);
+          }
+        } catch {
+          closeInputChannel();
+          scheduleInputRetry();
+        }
+      }
+
       // ---- Basic JPEG stream fallback ----
       let imageStreaming = false;
 
@@ -948,7 +1040,7 @@
             dragIntentTimer = null;
           }
           if (dragging && socket && !socket.disconnected) {
-            socket.emit('mouseup', { button: 'left' });
+            sendInput('mouseup', { button: 'left' });
           }
           dragging = false;
           dragIntentReady = false;
@@ -965,14 +1057,14 @@
             moved = true;
             dragging = false;
             if (!rightClickSent && socket && !socket.disconnected) {
-              socket.emit('click', { button: 'right' });
+              sendInput('click', { button: 'right' });
               rightClickSent = true;
             }
             return;
           }
           if (screenMedia().classList.contains('ready') && socket && !socket.disconnected) {
             const target = screenPointToDesktop({ x: event.clientX, y: event.clientY });
-            socket.emit('moveTo', target);
+            sendInput('moveTo', target);
             latestCursorPosition = target;
           }
           lastPoint = { x: event.clientX, y: event.clientY };
@@ -1002,10 +1094,10 @@
               dragIntentTimer = null;
             }
             if (dragIntentReady && !dragging) {
-              socket.emit('mousedown', { button: 'left' });
+              sendInput('mousedown', { button: 'left' });
               dragging = true;
             }
-            socket.emit('move', { dx: Math.round(dx), dy: Math.round(dy) });
+            sendInput('move', { dx: Math.round(dx), dy: Math.round(dy) });
             if (latestCursorPosition) {
               latestCursorPosition.x += Math.round(dx);
               latestCursorPosition.y += Math.round(dy);
@@ -1023,7 +1115,7 @@
           }
           if (!lastPoint) return;
           if (!moved && socket && !socket.disconnected) {
-            socket.emit('click', { button: 'left' });
+            sendInput('click', { button: 'left' });
           }
           releaseScreenDrag();
         });
@@ -1093,6 +1185,7 @@
 
         socket.on('screen:frame', handleScreenFrame);
         socket.on('rtc:signal', handleRtcSignal);
+        socket.on('input:signal', handleInputSignal);
         socket.on('rtc:error', (payload) => {
           if (rtcPeer || rtcStartTimer) fallBackToImageStream(payload?.message);
         });
@@ -1102,6 +1195,7 @@
 
         socket.on('connect', () => {
           setConnectionStatus('Connected');
+          startInputChannel();
           if (screenStreaming) {
             closeRtc(false);
             imageStreaming = false;
@@ -1128,6 +1222,7 @@
         socket.io.on('reconnect_failed', () => setConnectionStatus('Disconnected'));
         socket.on('disconnect', () => {
           setConnectionStatus('Reconnecting');
+          closeInputChannel();
           pendingFrameAck = null;
           if (screenStreaming) screenStatusOffline();
         });
@@ -1140,7 +1235,7 @@
           pointers.add(ev.pointerId);
           
           if (pointers.size >= 2) {
-            socket.emit('click', { button: 'right' });
+            sendInput('click', { button: 'right' });
             pointers.clear();
             return;
           }
@@ -1198,7 +1293,7 @@
                 isDragModeEnabled = true;
                 isDragging = true;
                 if (socket && !socket.disconnected) {
-                  socket.emit('mousedown', { button: 'left' });
+                  sendInput('mousedown', { button: 'left' });
                 }
                 // Show drag badge
                 let badge = touchArea.querySelector('.drag-badge');
@@ -1250,7 +1345,7 @@
             if (sendDx === 0 && dx !== 0) sendDx = dx > 0 ? 1 : -1;
             if (sendDy === 0 && dy !== 0) sendDy = dy > 0 ? 1 : -1;
             if (sendDx !== 0 || sendDy !== 0) {
-              socket.emit('move', { dx: sendDx, dy: sendDy });
+              sendInput('move', { dx: sendDx, dy: sendDy });
             }
             return; // Exit early - don't check for scroll or other modes
           }
@@ -1265,7 +1360,7 @@
               // Start dragging - press mouse button down
               isDragging = true;
               if (!socket || socket.disconnected) return;
-              socket.emit('mousedown', { button: 'left' });
+              sendInput('mousedown', { button: 'left' });
               // Move cursor immediately
               cursorIndicator.style.left = touchX + 'px';
               cursorIndicator.style.top = touchY + 'px';
@@ -1274,7 +1369,7 @@
               if (sendDx === 0 && dx !== 0) sendDx = dx > 0 ? 1 : -1;
               if (sendDy === 0 && dy !== 0) sendDy = dy > 0 ? 1 : -1;
               if (sendDx !== 0 || sendDy !== 0) {
-                socket.emit('move', { dx: sendDx, dy: sendDy });
+                sendInput('move', { dx: sendDx, dy: sendDy });
               }
               return;
             }
@@ -1291,7 +1386,7 @@
             const scrollDelta = Math.round(dy * sensitivity * 4); // Amplify scroll
             
             if (Math.abs(scrollDelta) >= 2) {
-              socket.emit('scroll', { delta: scrollDelta });
+              sendInput('scroll', { delta: scrollDelta });
             }
             
             return; // Don't move mouse when scrolling
@@ -1312,7 +1407,7 @@
             if (!socket || socket.disconnected) return;
             const scrollDelta = Math.round(dy * sensitivity * 4);
             if (Math.abs(scrollDelta) >= 2) {
-              socket.emit('scroll', { delta: scrollDelta });
+              sendInput('scroll', { delta: scrollDelta });
             }
             
             return;
@@ -1331,7 +1426,7 @@
           if (sendDy === 0 && dy !== 0) sendDy = dy > 0 ? 1 : -1;
           
           if (sendDx !== 0 || sendDy !== 0) {
-            socket.emit('move', { dx: sendDx, dy: sendDy });
+            sendInput('move', { dx: sendDx, dy: sendDy });
           }
         });
 
@@ -1341,7 +1436,7 @@
           // If dragging, release mouse button
           if (isDragging) {
             if (socket && !socket.disconnected) {
-              socket.emit('mouseup', { button: 'left' });
+              sendInput('mouseup', { button: 'left' });
             }
             isDragging = false;
             // Disable drag mode after releasing
@@ -1356,7 +1451,7 @@
           cursorIndicator.style.display = 'none';
           
           if (totalDistance < 15 && pointers.size === 1 && !isDragging) {
-            socket.emit('click', { button: 'left' });
+            sendInput('click', { button: 'left' });
           }
           
           totalDistance = 0;
@@ -1373,7 +1468,7 @@
           // If dragging, release mouse button
           if (isDragging) {
             if (socket && !socket.disconnected) {
-              socket.emit('mouseup', { button: 'left' });
+              sendInput('mouseup', { button: 'left' });
             }
             isDragging = false;
             // Disable drag mode
@@ -1395,10 +1490,10 @@
         });
 
         btnLeft && btnLeft.addEventListener('click', () => {
-          socket.emit('click', { button: 'left' });
+          sendInput('click', { button: 'left' });
         });
         btnRight && btnRight.addEventListener('click', () => {
-          socket.emit('click', { button: 'right' });
+          sendInput('click', { button: 'right' });
         });
         if (btnLogout) {
         btnLogout.addEventListener('click', async () => {
@@ -1442,7 +1537,7 @@
             trackpadPointers.add(ev.pointerId);
             
             if (trackpadPointers.size >= 2) {
-              socket.emit('click', { button: 'right' });
+              sendInput('click', { button: 'right' });
               trackpadPointers.clear();
               return;
             }
@@ -1461,7 +1556,7 @@
               trackpadDragHoldTimer = setTimeout(() => {
                 trackpadIsDragModeEnabled = true;
                 trackpadIsDragging = true;
-                if (socket && !socket.disconnected) socket.emit('mousedown', { button: 'left' });
+                if (socket && !socket.disconnected) sendInput('mousedown', { button: 'left' });
                 let badge = trackpad.querySelector('.drag-badge');
                 if (!badge) { badge = document.createElement('div'); badge.className = 'drag-badge'; badge.textContent = 'Drag Select'; trackpad.appendChild(badge); }
                 badge.style.display = 'inline-block';
@@ -1547,7 +1642,7 @@
             if (sendDx === 0 && dx !== 0) sendDx = dx > 0 ? 1 : -1;
             if (sendDy === 0 && dy !== 0) sendDy = dy > 0 ? 1 : -1;
             if (sendDx !== 0 || sendDy !== 0) {
-              socket.emit('move', { dx: sendDx, dy: sendDy });
+              sendInput('move', { dx: sendDx, dy: sendDy });
             }
             return; // Exit early - don't check for scroll or other modes
           }
@@ -1562,7 +1657,7 @@
               // Start dragging - press mouse button down
               trackpadIsDragging = true;
               if (!socket || socket.disconnected) return;
-              socket.emit('mousedown', { button: 'left' });
+              sendInput('mousedown', { button: 'left' });
               // Move cursor immediately
               const trackpadCursor = document.getElementById('trackpadCursor');
               if (trackpadCursor) {
@@ -1574,7 +1669,7 @@
               if (sendDx === 0 && dx !== 0) sendDx = dx > 0 ? 1 : -1;
               if (sendDy === 0 && dy !== 0) sendDy = dy > 0 ? 1 : -1;
               if (sendDx !== 0 || sendDy !== 0) {
-                socket.emit('move', { dx: sendDx, dy: sendDy });
+                sendInput('move', { dx: sendDx, dy: sendDy });
               }
               return;
             }
@@ -1588,7 +1683,7 @@
               const scrollDelta = Math.round(dy * sensitivity * 4); // Amplify scroll
               
               if (Math.abs(scrollDelta) >= 2) {
-                socket.emit('scroll', { delta: scrollDelta });
+                sendInput('scroll', { delta: scrollDelta });
               }
               
               return; // Don't move mouse when scrolling
@@ -1611,7 +1706,7 @@
               if (!socket || socket.disconnected) return;
               const scrollDelta = Math.round(dy * sensitivity * 4);
               if (Math.abs(scrollDelta) >= 2) {
-                socket.emit('scroll', { delta: scrollDelta });
+                sendInput('scroll', { delta: scrollDelta });
               }
               
               return;
@@ -1632,7 +1727,7 @@
             if (sendDy === 0 && dy !== 0) sendDy = dy > 0 ? 1 : -1;
             
             if (sendDx !== 0 || sendDy !== 0) {
-              socket.emit('move', { dx: sendDx, dy: sendDy });
+              sendInput('move', { dx: sendDx, dy: sendDy });
             }
           });
           
@@ -1642,7 +1737,7 @@
             // If dragging, release mouse button
             if (trackpadIsDragging) {
               if (socket && !socket.disconnected) {
-                socket.emit('mouseup', { button: 'left' });
+                sendInput('mouseup', { button: 'left' });
               }
               trackpadIsDragging = false;
               // Disable drag mode after releasing
@@ -1657,7 +1752,7 @@
             if (trackpadCursor) trackpadCursor.style.display = 'none';
             
             if (trackpadTotalDistance < 15 && trackpadPointers.size === 1 && !trackpadIsDragging) {
-              socket.emit('click', { button: 'left' });
+              sendInput('click', { button: 'left' });
             }
             
             trackpadTotalDistance = 0;
@@ -1674,7 +1769,7 @@
             // If dragging, release mouse button
             if (trackpadIsDragging) {
               if (socket && !socket.disconnected) {
-                socket.emit('mouseup', { button: 'left' });
+                sendInput('mouseup', { button: 'left' });
               }
               trackpadIsDragging = false;
               // Disable drag mode
@@ -2082,11 +2177,11 @@
             if (type === 'Screen') { if (switchMode) switchMode('screen'); return; }
             if (type === 'Settings') { openSettings(); return; }
             if (!socket || socket.disconnected) return;
-            if (type === 'LeftClick') { socket.emit('click', { button: 'left' }); return; }
-            if (type === 'RightClick') { socket.emit('click', { button: 'right' }); return; }
+            if (type === 'LeftClick') { sendInput('click', { button: 'left' }); return; }
+            if (type === 'RightClick') { sendInput('click', { button: 'right' }); return; }
             if (type === 'Info') { openInfoModal(); return; }
             // App actions
-            socket.emit('action', { type });
+            sendInput('action', { type });
           });
           btn.addEventListener('pointerup', (e) => { e.preventDefault(); onRelease(); });
           btn.addEventListener('pointercancel', (e) => { e.preventDefault(); onRelease(); });
@@ -2209,7 +2304,7 @@
           
           if (keyValue === '') return; // Skip empty keys
           
-          socket.emit('keyboard', { key: keyValue, ...options });
+          sendInput('keyboard', { key: keyValue, ...options });
         }
         
         function updateModifierButton(key) {

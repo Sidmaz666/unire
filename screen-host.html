@@ -161,6 +161,52 @@
       }
     }
 
+    // ---- Input data channels: phone -> this window -> Electron main (nut-js) ----
+    const inputPeers = new Map();
+
+    function closeInputPeer(viewerId) {
+      const peer = inputPeers.get(viewerId);
+      if (!peer) return;
+      inputPeers.delete(viewerId);
+      peer.pc.close();
+    }
+
+    async function handleInputSignal({ from, data }) {
+      if (!data || !window.unireHost) return;
+      try {
+        if (data.sdp) {
+          closeInputPeer(from);
+          const pc = new RTCPeerConnection({ iceServers: [] });
+          const peer = { pc, pendingCandidates: [] };
+          inputPeers.set(from, peer);
+          pc.ondatachannel = ({ channel }) => {
+            channel.onmessage = (event) => window.unireHost.input(from, event.data);
+          };
+          pc.onicecandidate = (event) => {
+            if (event.candidate) socket.emit('input:signal', { to: from, data: { candidate: event.candidate } });
+          };
+          pc.onconnectionstatechange = () => {
+            if (['failed', 'closed'].includes(pc.connectionState)) closeInputPeer(from);
+          };
+          await pc.setRemoteDescription(data.sdp);
+          await pc.setLocalDescription(await pc.createAnswer());
+          socket.emit('input:signal', { to: from, data: { sdp: pc.localDescription } });
+          for (const candidate of peer.pendingCandidates) await pc.addIceCandidate(candidate).catch(() => {});
+          peer.pendingCandidates = [];
+        } else if (data.candidate) {
+          const peer = inputPeers.get(from);
+          if (!peer) return;
+          if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(data.candidate).catch(() => {});
+          else peer.pendingCandidates.push(data.candidate);
+        }
+      } catch {
+        closeInputPeer(from);
+      }
+    }
+
+    socket.on('input:signal', handleInputSignal);
+    socket.on('input:stop', ({ viewerId }) => closeInputPeer(viewerId));
+
     socket.on('rtc:start', startPeer);
     socket.on('rtc:stop', ({ viewerId }) => closePeer(viewerId));
     socket.on('rtc:signal', async ({ from, data }) => {
