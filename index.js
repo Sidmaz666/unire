@@ -29,6 +29,8 @@ const io = new IOServer(server, {
 });
 let activePort = null;
 let screenCaptureInFlight = null;
+let nativeScreenCapturer = null;
+const SCREEN_FRAME_INTERVAL_MS = 100;
 
 // Basic middlewares
 app.use(express.json());
@@ -314,19 +316,46 @@ app.get("/api/cursor", async (req, res) => {
   }
 });
 
+// Electron provides a native capturer (desktopCapturer); plain Node falls back to screenshot-desktop.
+export function setScreenCapturer(capturer) {
+  nativeScreenCapturer = capturer;
+}
+
+async function captureScreenFrame() {
+  if (nativeScreenCapturer) {
+    try {
+      const frame = await nativeScreenCapturer();
+      if (frame?.image?.length) return frame;
+    } catch (err) {
+      console.error("[screen] native capture failed, falling back", err);
+    }
+  }
+  const image = await screenshot({ format: "jpg" });
+  return { image, mime: "image/jpeg", width: null, height: null };
+}
+
+function captureSharedScreenFrame() {
+  if (!screenCaptureInFlight) {
+    screenCaptureInFlight = captureScreenFrame().finally(() => {
+      screenCaptureInFlight = null;
+    });
+  }
+  return screenCaptureInFlight;
+}
+
 app.get("/api/screen-image", async (req, res) => {
   if (!verifySession(req.cookies?.sid)) {
     return res.status(401).json({ error: "unauthorized" });
   }
 
   try {
-    if (!screenCaptureInFlight) {
-      screenCaptureInFlight = screenshot({ format: "png" }).finally(() => {
-        screenCaptureInFlight = null;
-      });
+    const frame = await captureSharedScreenFrame();
+    if (frame.width && frame.height) {
+      res.set("X-Screen-Width", String(frame.width));
+      res.set("X-Screen-Height", String(frame.height));
     }
-    const image = await screenCaptureInFlight;
-    res.type("png").send(image);
+    res.set("Cache-Control", "no-store");
+    res.type(frame.mime).send(frame.image);
   } catch (err) {
     console.error("[screen-image] error", err);
     res.status(503).json({ error: "screen capture unavailable" });
@@ -383,6 +412,47 @@ io.on("connection", (socket) => {
       }).catch(() => {});
     }
   }, 5000);
+
+  // Live screen stream: frames are pushed one at a time and the next frame is only
+  // captured after the client acknowledges the previous one, so slow links never queue up.
+  let screenStreaming = false;
+  let screenStreamId = 0;
+  const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+  async function pumpScreenFrames(streamId) {
+    const isCurrent = () => screenStreaming && streamId === screenStreamId && socket.connected;
+    while (isCurrent()) {
+      const startedAt = Date.now();
+      try {
+        const frame = await captureSharedScreenFrame();
+        if (!isCurrent()) break;
+        await new Promise(resolve => {
+          socket.timeout(5000).emit("screen:frame", {
+            image: frame.image,
+            mime: frame.mime,
+            width: frame.width,
+            height: frame.height
+          }, () => resolve());
+        });
+      } catch (err) {
+        console.error("[screen] capture error", err);
+        socket.emit("screen:error", { message: "Screen capture unavailable" });
+        await wait(1000);
+        continue;
+      }
+      await wait(Math.max(0, SCREEN_FRAME_INTERVAL_MS - (Date.now() - startedAt)));
+    }
+  }
+
+  socket.on("screen:start", () => {
+    if (screenStreaming) return;
+    screenStreaming = true;
+    pumpScreenFrames(++screenStreamId);
+  });
+
+  socket.on("screen:stop", () => {
+    screenStreaming = false;
+  });
 
   socket.on("move", (data) => {
     try {
@@ -641,6 +711,7 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     console.log("client disconnected", socket.id);
+    screenStreaming = false;
     if (leftMouseButtonDown) {
       mouse.releaseButton(Button.LEFT).catch(() => {});
       leftMouseButtonDown = false;

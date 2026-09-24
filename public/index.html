@@ -40,20 +40,17 @@
     .settings-close { width:36px; height:36px; padding:0; font-size:24px; }
     .setting-row { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:48px; border-top:1px solid var(--line); color:var(--ink); font-size:14px; }
     .setting-row input { width:20px; height:20px; accent-color:var(--accent); }
-    #screenViewport { flex:0 1 auto; width:100%; aspect-ratio:16 / 9; max-height:calc(100% - 50px); display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative; background:#050705; border:1px solid var(--line); border-radius:14px; touch-action:none; }
-    #screenImage { display:block; width:100%; height:100%; object-fit:contain; transform-origin:center center; touch-action:none; }
+    #screenViewport { flex:1 1 auto; width:100%; min-height:0; overflow:hidden; position:relative; background:#050705; border:1px solid var(--line); border-radius:14px; touch-action:none; box-sizing:border-box; }
+    #screenImage { position:absolute; left:50%; top:50%; display:block; max-width:none; transform-origin:center center; transform:translate(-50%, -50%); touch-action:none; pointer-events:none; visibility:hidden; }
+    #screenImage.ready { visibility:visible; }
+    #screenMessage { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:20px; text-align:center; color:var(--muted); font-size:14px; pointer-events:none; }
+    #screenMessage[hidden] { display:none; }
     #screenClose { min-width:42px; font-size:24px; line-height:1; }
     #screenTextInput { position:fixed; left:-10000px; top:0; width:1px; height:1px; opacity:.01; }
     #screenCursor, #screenTouchIndicator { position:absolute; pointer-events:none; z-index:2; transform:translate(-50%, -50%); }
     #screenCursor { width:13px; height:13px; border:2px solid #fff; border-radius:50%; background:#39ff14; box-shadow:0 0 0 2px #111, 0 0 10px #39ff14; }
     #screenTouchIndicator { width:28px; height:28px; border:2px solid var(--accent); border-radius:50%; background:color-mix(in srgb, var(--accent) 25%, transparent); box-shadow:0 0 14px var(--accent); opacity:0; transition:opacity .12s ease; }
     #screenTouchIndicator.visible { opacity:1; }
-    @media (orientation: portrait) {
-      #screen-mode { justify-content:stretch; }
-      #screenViewport { width:100%; height:calc(100% - 50px); max-height:none; aspect-ratio:9 / 16; }
-      #screenImage { width:calc(100% * 16 / 9); height:auto; max-width:none; object-fit:contain; transform:rotate(90deg); }
-    }
-    @media (orientation: landscape) { #screenViewport { max-height:calc(100% - 50px); } }
     #tab-keyboard { display:none; height:100%; width:min(100%, calc(100dvh * 9 / 16)); min-height:0; margin-inline:auto; flex-direction:column; }
     #tab-keyboard.active { display:flex; }
     #tab-info { display:none; height:100%; overflow-y:auto; }
@@ -198,7 +195,7 @@
     <div id="content">
       <section id="screen-mode" class="mode-panel" aria-label="Screen mode">
         <div class="screen-toolbar">
-          <span class="stream-status-wrap"><span class="stream-status" aria-label="Streaming"></span><span>Live</span><span id="streamRate" class="stream-rate">0 fps</span></span>
+          <span class="stream-status-wrap"><span class="stream-status offline" aria-label="Streaming"></span><span id="streamLabel">Connecting</span><span id="streamRate" class="stream-rate">0 fps</span></span>
           <div class="screen-actions">
             <button id="screenKeyboard" class="screen-action" title="Open keyboard" aria-label="Open keyboard">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h.01M10 9h.01M13 9h.01M16 9h.01M7 13h10M8 16h8"/></svg>
@@ -209,7 +206,7 @@
             <button id="screenClose" class="screen-action" title="Return to manual" aria-label="Return to manual">&times;</button>
           </div>
         </div>
-        <div id="screenViewport"><img id="screenImage" alt="Live desktop screen" /><span id="screenCursor" aria-hidden="true"></span><span id="screenTouchIndicator" aria-hidden="true"></span></div>
+        <div id="screenViewport"><img id="screenImage" alt="Live desktop screen" /><span id="screenMessage">Connecting to screen&hellip;</span><span id="screenCursor" aria-hidden="true"></span><span id="screenTouchIndicator" aria-hidden="true"></span></div>
       </section>
 
       <!-- Remote Tab (formerly Keyboard) -->
@@ -330,14 +327,18 @@
       const screenTextInput = document.getElementById('screenTextInput');
       const streamStatus = document.querySelector('.stream-status');
       const streamRate = document.getElementById('streamRate');
+      const streamLabel = document.getElementById('streamLabel');
+      const screenMessage = document.getElementById('screenMessage');
       const screenCursor = document.getElementById('screenCursor');
       const screenTouchIndicator = document.getElementById('screenTouchIndicator');
-      let screenTimer = null;
+      let screenStreaming = false;
+      let pendingFrameAck = null;
+      let screenDesktopSize = null;
+      let frameTimes = [];
       let cursorTimer = null;
       let frameRequestInFlight = false;
       let cursorRequestInFlight = false;
       let screenObjectUrl = null;
-      let lastFrameAt = 0;
       let latestCursorPosition = null;
       let switchMode = null;
       const virtualKeyboard = document.getElementById('virtualKeyboard');
@@ -476,33 +477,106 @@
         setMode('manual');
       }
 
+      function isPortraitView() {
+        return window.matchMedia('(orientation: portrait)').matches;
+      }
+
+      function sourceSize() {
+        return {
+          width: Math.max(1, screenDesktopSize?.width || screenImage.naturalWidth),
+          height: Math.max(1, screenDesktopSize?.height || screenImage.naturalHeight)
+        };
+      }
+
+      // Fit the desktop frame inside the viewport; in portrait it is rotated 90deg clockwise
+      // so the wide desktop uses the tall phone screen.
+      function layoutScreenImage() {
+        if (!screenImage.naturalWidth) return;
+        const viewportWidth = screenViewport.clientWidth;
+        const viewportHeight = screenViewport.clientHeight;
+        if (!viewportWidth || !viewportHeight) return;
+        const aspect = screenImage.naturalWidth / screenImage.naturalHeight;
+        const portrait = isPortraitView();
+        const width = portrait
+          ? Math.min(viewportHeight, viewportWidth * aspect)
+          : Math.min(viewportWidth, viewportHeight * aspect);
+        screenImage.style.width = `${width}px`;
+        screenImage.style.height = `${width / aspect}px`;
+        screenImage.style.transform = portrait
+          ? 'translate(-50%, -50%) rotate(90deg)'
+          : 'translate(-50%, -50%)';
+      }
+
+      function showScreenMessage(text) {
+        screenMessage.textContent = text;
+        screenMessage.hidden = !text;
+      }
+
+      function displayFrame(blob, desktopSize) {
+        const nextUrl = URL.createObjectURL(blob);
+        const previousUrl = screenObjectUrl;
+        screenObjectUrl = nextUrl;
+        if (desktopSize) screenDesktopSize = desktopSize;
+        screenImage.src = nextUrl;
+        if (previousUrl) setTimeout(() => URL.revokeObjectURL(previousUrl), 1000);
+      }
+
+      function releaseFrameAck() {
+        if (!pendingFrameAck) return;
+        const ack = pendingFrameAck;
+        pendingFrameAck = null;
+        ack();
+      }
+
+      // The server waits for this ack before capturing the next frame.
+      function handleScreenFrame(frame, ack) {
+        if (!screenStreaming) {
+          if (typeof ack === 'function') ack();
+          return;
+        }
+        releaseFrameAck();
+        pendingFrameAck = typeof ack === 'function' ? ack : null;
+        const size = frame.width && frame.height ? { width: frame.width, height: frame.height } : null;
+        displayFrame(new Blob([frame.image], { type: frame.mime || 'image/jpeg' }), size);
+      }
+
       function refreshScreen() {
+        if (screenStreaming && socket && socket.connected) {
+          socket.emit('screen:stop');
+          socket.emit('screen:start');
+          return;
+        }
         if (frameRequestInFlight) return;
         frameRequestInFlight = true;
-        fetch(`/api/screen-image?t=${Date.now()}`, { cache: 'no-store' })
+        fetch(`/api/screen-image?t=${Date.now()}`, { cache: 'no-store', credentials: 'same-origin' })
           .then((response) => {
             if (!response.ok) throw new Error(`screen ${response.status}`);
-            return response.blob();
+            const width = Number(response.headers.get('X-Screen-Width'));
+            const height = Number(response.headers.get('X-Screen-Height'));
+            return response.blob().then((blob) => displayFrame(blob, width && height ? { width, height } : null));
           })
-          .then((blob) => {
-            if (screenObjectUrl) URL.revokeObjectURL(screenObjectUrl);
-            screenObjectUrl = URL.createObjectURL(blob);
-            screenImage.src = screenObjectUrl;
-          })
-          .catch(() => screenStatusOffline())
+          .catch(() => screenStatusOffline('Screen capture unavailable. Check the desktop app.'))
           .finally(() => { frameRequestInFlight = false; });
       }
 
       function startScreenUpdates() {
-        if (screenTimer) return;
-        refreshScreen();
-        screenTimer = setInterval(refreshScreen, 1500);
+        if (screenStreaming) return;
+        screenStreaming = true;
+        frameTimes = [];
+        if (!screenImage.classList.contains('ready')) showScreenMessage('Connecting to screen\u2026');
+        requestAnimationFrame(layoutScreenImage);
+        if (socket && socket.connected) {
+          socket.emit('screen:start');
+        } else {
+          refreshScreen();
+        }
       }
 
       function stopScreenUpdates() {
-        if (!screenTimer) return;
-        clearInterval(screenTimer);
-        screenTimer = null;
+        if (!screenStreaming) return;
+        screenStreaming = false;
+        releaseFrameAck();
+        if (socket && socket.connected) socket.emit('screen:stop');
       }
 
       function startCursorUpdates() {
@@ -526,18 +600,20 @@
           if (!response.ok) return;
           const position = await response.json();
           latestCursorPosition = position;
-          const imageWidth = Math.max(1, screenImage.naturalWidth);
-          const imageHeight = Math.max(1, screenImage.naturalHeight);
+          if (!screenImage.classList.contains('ready')) {
+            screenCursor.style.display = 'none';
+            return;
+          }
+          const { width: imageWidth, height: imageHeight } = sourceSize();
           const viewportRect = screenViewport.getBoundingClientRect();
-          const isPortrait = window.matchMedia('(orientation: portrait)').matches;
-          const left = isPortrait
-            ? (1 - position.y / imageHeight) * viewportRect.width
-            : (position.x / imageWidth) * viewportRect.width;
-          const top = isPortrait
-            ? (position.x / imageWidth) * viewportRect.height
-            : (position.y / imageHeight) * viewportRect.height;
-          screenCursor.style.left = `${Math.max(0, Math.min(viewportRect.width, left))}px`;
-          screenCursor.style.top = `${Math.max(0, Math.min(viewportRect.height, top))}px`;
+          const imageRect = screenImage.getBoundingClientRect();
+          const isPortrait = isPortraitView();
+          const px = Math.max(0, Math.min(1, position.x / imageWidth));
+          const py = Math.max(0, Math.min(1, position.y / imageHeight));
+          const left = isPortrait ? (1 - py) * imageRect.width : px * imageRect.width;
+          const top = isPortrait ? px * imageRect.height : py * imageRect.height;
+          screenCursor.style.left = `${imageRect.left - viewportRect.left + left}px`;
+          screenCursor.style.top = `${imageRect.top - viewportRect.top + top}px`;
           screenCursor.style.display = 'block';
         } catch {
           screenCursor.style.display = 'none';
@@ -546,9 +622,12 @@
         }
       }
 
-      function screenStatusOffline() {
+      function screenStatusOffline(message) {
         streamStatus.classList.add('offline');
         streamStatus.classList.remove('live');
+        streamLabel.textContent = 'Offline';
+        streamRate.textContent = '0 fps';
+        if (message && !screenImage.classList.contains('ready')) showScreenMessage(message);
       }
 
       function showTouchIndicator(event) {
@@ -573,11 +652,10 @@
 
         function screenDelta(currentPoint, previousPoint) {
           const imageRect = screenImage.getBoundingClientRect();
-          const isPortrait = window.matchMedia('(orientation: portrait)').matches;
+          const isPortrait = isPortraitView();
           const visualDx = currentPoint.x - previousPoint.x;
           const visualDy = currentPoint.y - previousPoint.y;
-          const sourceWidth = Math.max(1, screenImage.naturalWidth);
-          const sourceHeight = Math.max(1, screenImage.naturalHeight);
+          const { width: sourceWidth, height: sourceHeight } = sourceSize();
 
           if (isPortrait) {
             // The image is rotated clockwise: visual down maps to source right.
@@ -595,11 +673,10 @@
 
         function screenPointToDesktop(point) {
           const imageRect = screenImage.getBoundingClientRect();
-          const sourceWidth = Math.max(1, screenImage.naturalWidth);
-          const sourceHeight = Math.max(1, screenImage.naturalHeight);
+          const { width: sourceWidth, height: sourceHeight } = sourceSize();
           const x = Math.max(0, Math.min(imageRect.width, point.x - imageRect.left));
           const y = Math.max(0, Math.min(imageRect.height, point.y - imageRect.top));
-          const isPortrait = window.matchMedia('(orientation: portrait)').matches;
+          const isPortrait = isPortraitView();
 
           if (isPortrait) {
             return {
@@ -728,20 +805,30 @@
       }
 
       screenImage.addEventListener('error', () => {
-        streamStatus.classList.add('offline');
-        streamStatus.classList.remove('live');
+        releaseFrameAck();
+        screenStatusOffline('Could not decode the screen frame.');
       });
 
       screenImage.addEventListener('load', () => {
+        layoutScreenImage();
+        screenImage.classList.add('ready');
+        showScreenMessage('');
         streamStatus.classList.remove('offline');
         streamStatus.classList.add('live');
+        streamLabel.textContent = 'Live';
         const now = performance.now();
-        if (lastFrameAt) {
-          const framesPerSecond = Math.min(60, 1000 / Math.max(1, now - lastFrameAt));
+        frameTimes.push(now);
+        while (frameTimes.length && now - frameTimes[0] > 2000) frameTimes.shift();
+        if (frameTimes.length > 1) {
+          const framesPerSecond = (frameTimes.length - 1) * 1000 / Math.max(1, now - frameTimes[0]);
           streamRate.textContent = `${framesPerSecond.toFixed(1)} fps`;
         }
-        lastFrameAt = now;
+        releaseFrameAck();
       });
+
+      window.addEventListener('resize', layoutScreenImage);
+      window.addEventListener('orientationchange', () => setTimeout(layoutScreenImage, 150));
+      if (window.ResizeObserver) new ResizeObserver(layoutScreenImage).observe(screenViewport);
 
       function initSocket(){
         socket = io({
@@ -761,8 +848,14 @@
           if (modalStatus) modalStatus.textContent = status;
         };
 
+        socket.on('screen:frame', handleScreenFrame);
+        socket.on('screen:error', (payload) => {
+          screenStatusOffline(payload?.message || 'Screen capture unavailable.');
+        });
+
         socket.on('connect', () => {
           setConnectionStatus('Connected');
+          if (screenStreaming) socket.emit('screen:start');
           const connStatus = document.getElementById('connection-status');
           const infoIP = document.getElementById('info-ip');
           if (connStatus) connStatus.textContent = 'Connected';
@@ -784,6 +877,8 @@
         socket.io.on('reconnect_failed', () => setConnectionStatus('Disconnected'));
         socket.on('disconnect', () => {
           setConnectionStatus('Reconnecting');
+          pendingFrameAck = null;
+          if (screenStreaming) screenStatusOffline();
         });
 
         if (touchArea) {

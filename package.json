@@ -45,7 +45,8 @@
     },
     "asar": true,
     "asarUnpack": [
-      "**/better-sqlite3/**/*"
+      "**/better-sqlite3/**/*",
+      "**/screenshot-desktop/**/*"
     ],
     "files": [
       "**/*",
