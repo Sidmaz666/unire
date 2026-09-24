@@ -1,0 +1,185 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Unire Screen Host</title>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // Hidden Electron window: captures the desktop (and system audio where the OS allows it)
+    // once, then serves each phone as a WebRTC peer. Also provides JPEG frames for the
+    // socket fallback stream.
+    const params = new URLSearchParams(location.search);
+    const sourceId = params.get('source');
+    const canvas = document.getElementById('canvas');
+    const context = canvas.getContext('2d');
+    const peers = new Map();
+    const IDLE_STOP_MS = 30 * 1000;
+    let mediaPromise = null;
+    let latestFrame = null;
+    let frameReaderStarted = false;
+    let idleTimer = null;
+
+    function desktopConstraints() {
+      return {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+          chromeMediaSourceId: sourceId,
+          maxWidth: 1920,
+          maxHeight: 1920,
+          maxFrameRate: 60
+        }
+      };
+    }
+
+    async function acquireMedia() {
+      try {
+        // System audio loopback works on Windows (and some Linux setups); macOS has no
+        // system audio capture, so retry video-only.
+        return await navigator.mediaDevices.getUserMedia({
+          audio: { mandatory: { chromeMediaSource: 'desktop' } },
+          video: desktopConstraints()
+        });
+      } catch {
+        return navigator.mediaDevices.getUserMedia({ audio: false, video: desktopConstraints() });
+      }
+    }
+
+    function getMedia() {
+      clearTimeout(idleTimer);
+      if (!mediaPromise) {
+        mediaPromise = acquireMedia();
+        mediaPromise.catch(() => { mediaPromise = null; });
+      }
+      return mediaPromise;
+    }
+
+    function scheduleIdleStop() {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(async () => {
+        if (peers.size || !mediaPromise) return;
+        const media = await mediaPromise.catch(() => null);
+        mediaPromise = null;
+        frameReaderStarted = false;
+        if (latestFrame) { latestFrame.close(); latestFrame = null; }
+        if (media) media.getTracks().forEach(track => track.stop());
+      }, IDLE_STOP_MS);
+    }
+
+    // ---- JPEG frames for the fallback stream ----
+    async function readFrames(track) {
+      const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (latestFrame) latestFrame.close();
+        latestFrame = value;
+      }
+    }
+
+    window.grabFrame = async (quality) => {
+      const media = await getMedia();
+      if (!frameReaderStarted) {
+        frameReaderStarted = true;
+        readFrames(media.getVideoTracks()[0].clone()).catch(() => { frameReaderStarted = false; });
+      }
+      for (let attempt = 0; attempt < 40 && !latestFrame; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      scheduleIdleStop();
+      if (!latestFrame) return null;
+      canvas.width = latestFrame.displayWidth;
+      canvas.height = latestFrame.displayHeight;
+      context.drawImage(latestFrame, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', quality);
+    };
+
+    // ---- WebRTC peers ----
+    const socket = io({ auth: { captureToken: params.get('token') }, transports: ['websocket'] });
+
+    function closePeer(viewerId) {
+      const peer = peers.get(viewerId);
+      if (!peer) return;
+      peers.delete(viewerId);
+      peer.tracks.forEach(track => track.stop());
+      peer.pc.close();
+      if (!peers.size) scheduleIdleStop();
+    }
+
+    function preferCodecs(transceiver) {
+      const capabilities = RTCRtpSender.getCapabilities && RTCRtpSender.getCapabilities('video');
+      if (!capabilities || !transceiver.setCodecPreferences) return;
+      // Hardware H.264 keeps PC CPU low and decodes well on phones.
+      const rank = (codec) => codec.mimeType === 'video/H264' ? 0 : codec.mimeType === 'video/VP8' ? 1 : 2;
+      const codecs = [...capabilities.codecs].sort((a, b) => rank(a) - rank(b));
+      try { transceiver.setCodecPreferences(codecs); } catch {}
+    }
+
+    async function startPeer({ viewerId, smooth }) {
+      closePeer(viewerId);
+      try {
+        const media = await getMedia();
+        const video = media.getVideoTracks()[0].clone();
+        video.contentHint = smooth ? 'motion' : 'detail';
+        const tracks = [video];
+        const audioSource = media.getAudioTracks()[0];
+        if (audioSource) tracks.push(audioSource.clone());
+
+        const pc = new RTCPeerConnection({ iceServers: [] });
+        const peer = { pc, tracks, pendingCandidates: [] };
+        peers.set(viewerId, peer);
+        const outgoing = new MediaStream(tracks);
+        const videoTransceiver = pc.addTransceiver(video, { direction: 'sendonly', streams: [outgoing] });
+        preferCodecs(videoTransceiver);
+        if (tracks[1]) pc.addTransceiver(tracks[1], { direction: 'sendonly', streams: [outgoing] });
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) socket.emit('rtc:signal', { to: viewerId, data: { candidate: event.candidate } });
+        };
+        pc.onconnectionstatechange = () => {
+          if (['failed', 'closed'].includes(pc.connectionState)) closePeer(viewerId);
+        };
+
+        await pc.setLocalDescription(await pc.createOffer());
+        socket.emit('rtc:signal', {
+          to: viewerId,
+          data: { sdp: pc.localDescription, audio: Boolean(tracks[1]) }
+        });
+
+        const sender = videoTransceiver.sender;
+        const parameters = sender.getParameters();
+        parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
+        parameters.encodings[0].maxBitrate = smooth ? 12000000 : 8000000;
+        parameters.encodings[0].maxFramerate = smooth ? 60 : 30;
+        parameters.degradationPreference = smooth ? 'maintain-framerate' : 'balanced';
+        sender.setParameters(parameters).catch(() => {});
+      } catch (err) {
+        closePeer(viewerId);
+        socket.emit('rtc:error', { to: viewerId, message: `Screen capture failed: ${err.message}` });
+      }
+    }
+
+    socket.on('rtc:start', startPeer);
+    socket.on('rtc:stop', ({ viewerId }) => closePeer(viewerId));
+    socket.on('rtc:signal', async ({ from, data }) => {
+      const peer = peers.get(from);
+      if (!peer || !data) return;
+      try {
+        if (data.sdp) {
+          await peer.pc.setRemoteDescription(data.sdp);
+          for (const candidate of peer.pendingCandidates) await peer.pc.addIceCandidate(candidate).catch(() => {});
+          peer.pendingCandidates = [];
+        } else if (data.candidate) {
+          if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(data.candidate).catch(() => {});
+          else peer.pendingCandidates.push(data.candidate);
+        }
+      } catch (err) {
+        closePeer(from);
+        socket.emit('rtc:error', { to: from, message: 'Could not connect the screen stream' });
+      }
+    });
+  </script>
+</body>
+</html>

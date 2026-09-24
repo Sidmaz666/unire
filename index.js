@@ -30,6 +30,10 @@ const io = new IOServer(server, {
 let activePort = null;
 let screenCaptureInFlight = null;
 let nativeScreenCapturer = null;
+// WebRTC screen host (Electron hidden window): { token, ensure(), getDesktopSize() }
+let screenHost = null;
+let screenHostSocket = null;
+const screenHostWaiters = new Set();
 const SCREEN_FRAME_INTERVAL_MS = 100;
 
 // Basic middlewares
@@ -321,6 +325,34 @@ export function setScreenCapturer(capturer) {
   nativeScreenCapturer = capturer;
 }
 
+export function setScreenHost(host) {
+  screenHost = host;
+}
+
+function waitForScreenHost(timeoutMs) {
+  if (screenHostSocket) return Promise.resolve(screenHostSocket);
+  return new Promise((resolve, reject) => {
+    const waiter = (hostSocket) => {
+      clearTimeout(timer);
+      screenHostWaiters.delete(waiter);
+      resolve(hostSocket);
+    };
+    const timer = setTimeout(() => {
+      screenHostWaiters.delete(waiter);
+      reject(new Error("screen host did not start"));
+    }, timeoutMs);
+    screenHostWaiters.add(waiter);
+  });
+}
+
+// Page for the hidden Electron window that captures the desktop and serves WebRTC peers.
+app.get("/screen-host", (req, res) => {
+  if (!screenHost || req.query.token !== screenHost.token) {
+    return res.status(404).end();
+  }
+  res.sendFile(path.join(__dirname, "screen-host.html"));
+});
+
 async function captureScreenFrame() {
   if (nativeScreenCapturer) {
     try {
@@ -372,13 +404,38 @@ io.use((socket, next) => {
     return parts.length >= 2 ? [parts[0], decodeURIComponent(parts.slice(1).join("="))] : null;
   }).filter(Boolean));
   const sid = cookies?.sid;
+  const captureToken = socket.handshake.auth?.captureToken;
+  if (screenHost && captureToken && captureToken === screenHost.token) {
+    socket.data.isScreenHost = true;
+    return next();
+  }
   if (!verifySession(sid)) {
     return next(new Error("unauthorized"));
   }
   return next();
 });
 
+function registerScreenHost(socket) {
+  screenHostSocket = socket;
+  for (const waiter of [...screenHostWaiters]) waiter(socket);
+
+  socket.on("rtc:signal", ({ to, data } = {}) => {
+    if (to) io.to(to).emit("rtc:signal", data);
+  });
+  socket.on("rtc:error", ({ to, message } = {}) => {
+    if (to) io.to(to).emit("rtc:error", { message });
+  });
+  socket.on("disconnect", () => {
+    if (screenHostSocket === socket) screenHostSocket = null;
+    io.emit("rtc:error", { message: "Screen host stopped" });
+  });
+}
+
 io.on("connection", (socket) => {
+  if (socket.data.isScreenHost) {
+    registerScreenHost(socket);
+    return;
+  }
   console.log("remote client connected", socket.id);
 
   // Track position in memory to avoid slow OS queries
@@ -402,6 +459,20 @@ io.on("connection", (socket) => {
   }).catch(() => {
     positionInitialized = true;
   });
+
+  // Relative moves are applied to a cached position for speed; once movement pauses,
+  // re-read the real cursor so the cache never drifts off-screen (e.g. after edges or
+  // absolute jumps from screen mode), which made the trackpad feel unresponsive.
+  let resyncTimer = null;
+  function scheduleCursorResync() {
+    clearTimeout(resyncTimer);
+    resyncTimer = setTimeout(() => {
+      mouse.getPosition().then(pos => {
+        cachedPos.x = pos.x;
+        cachedPos.y = pos.y;
+      }).catch(() => {});
+    }, 120);
+  }
 
   // Sync position every 5 seconds to prevent drift
   const syncInterval = setInterval(() => {
@@ -481,9 +552,46 @@ io.on("connection", (socket) => {
 
       // Set position WITHOUT waiting - FIRE AND FORGET for speed!
       mouse.setPosition(new Point(cachedPos.x, cachedPos.y)).catch(() => {});
+      scheduleCursorResync();
     } catch (err) {
       console.error("[move] error", err);
     }
+  });
+
+  // Absolute move used by screen mode taps.
+  socket.on("moveTo", (data) => {
+    if (!data || !Number.isFinite(data.x) || !Number.isFinite(data.y)) return;
+    cachedPos.x = Math.round(data.x);
+    cachedPos.y = Math.round(data.y);
+    positionInitialized = true;
+    mouse.setPosition(new Point(cachedPos.x, cachedPos.y)).catch(() => {});
+    scheduleCursorResync();
+  });
+
+  // WebRTC screen view: signalling is relayed between this viewer and the screen host.
+  socket.on("rtc:start", async (options, ack) => {
+    const reply = typeof ack === "function" ? ack : () => {};
+    if (!screenHost) return reply({ ok: false, reason: "unsupported" });
+    try {
+      if (!screenHostSocket) screenHost.ensure();
+      const hostSocket = await waitForScreenHost(10000);
+      hostSocket.emit("rtc:start", {
+        viewerId: socket.id,
+        smooth: Boolean(options?.smooth)
+      });
+      reply({ ok: true, ...screenHost.getDesktopSize() });
+    } catch (err) {
+      console.error("[rtc] start failed", err);
+      reply({ ok: false, reason: "host unavailable" });
+    }
+  });
+
+  socket.on("rtc:signal", (data) => {
+    if (screenHostSocket && data) screenHostSocket.emit("rtc:signal", { from: socket.id, data });
+  });
+
+  socket.on("rtc:stop", () => {
+    if (screenHostSocket) screenHostSocket.emit("rtc:stop", { viewerId: socket.id });
   });
 
   socket.on("click", async (data) => {
@@ -712,6 +820,8 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     console.log("client disconnected", socket.id);
     screenStreaming = false;
+    clearTimeout(resyncTimer);
+    if (screenHostSocket) screenHostSocket.emit("rtc:stop", { viewerId: socket.id });
     if (leftMouseButtonDown) {
       mouse.releaseButton(Button.LEFT).catch(() => {});
       leftMouseButtonDown = false;

@@ -41,8 +41,10 @@
     .setting-row { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:48px; border-top:1px solid var(--line); color:var(--ink); font-size:14px; }
     .setting-row input { width:20px; height:20px; accent-color:var(--accent); }
     #screenViewport { flex:1 1 auto; width:100%; min-height:0; overflow:hidden; position:relative; background:#050705; border:1px solid var(--line); border-radius:14px; touch-action:none; box-sizing:border-box; }
-    #screenImage { position:absolute; left:50%; top:50%; display:block; max-width:none; transform-origin:center center; transform:translate(-50%, -50%); touch-action:none; pointer-events:none; visibility:hidden; }
-    #screenImage.ready { visibility:visible; }
+    #screenImage, #screenVideo { position:absolute; left:50%; top:50%; display:block; max-width:none; transform-origin:center center; transform:translate(-50%, -50%); touch-action:none; pointer-events:none; visibility:hidden; background:#000; }
+    #screenImage.ready, #screenVideo.ready { visibility:visible; }
+    .screen-action.on { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+    .screen-action:disabled { opacity:.4; }
     #screenMessage { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:20px; text-align:center; color:var(--muted); font-size:14px; pointer-events:none; }
     #screenMessage[hidden] { display:none; }
     #screenClose { min-width:42px; font-size:24px; line-height:1; }
@@ -200,13 +202,16 @@
             <button id="screenKeyboard" class="screen-action" title="Open keyboard" aria-label="Open keyboard">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h.01M10 9h.01M13 9h.01M16 9h.01M7 13h10M8 16h8"/></svg>
             </button>
+            <button id="screenAudio" class="screen-action" title="Play computer audio on this device" aria-label="Play computer audio on this device" aria-pressed="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path class="audio-wave" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/><path class="audio-muted" d="M17 9l5 6M22 9l-5 6"/></svg>
+            </button>
             <button id="screenRefresh" class="screen-action" title="Refresh screen" aria-label="Refresh screen">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0 2 5"/><path d="M20 4v7h-7"/></svg>
             </button>
             <button id="screenClose" class="screen-action" title="Return to manual" aria-label="Return to manual">&times;</button>
           </div>
         </div>
-        <div id="screenViewport"><img id="screenImage" alt="Live desktop screen" /><span id="screenMessage">Connecting to screen&hellip;</span><span id="screenCursor" aria-hidden="true"></span><span id="screenTouchIndicator" aria-hidden="true"></span></div>
+        <div id="screenViewport"><video id="screenVideo" playsinline autoplay muted></video><img id="screenImage" alt="Live desktop screen" /><span id="screenMessage">Connecting to screen&hellip;</span><span id="screenCursor" aria-hidden="true"></span><span id="screenTouchIndicator" aria-hidden="true"></span></div>
       </section>
 
       <!-- Remote Tab (formerly Keyboard) -->
@@ -230,6 +235,8 @@
           <div class="settings-head"><strong>Settings</strong><button id="settingsClose" class="settings-close" aria-label="Close settings">&times;</button></div>
           <label class="setting-row" for="soundEffectsToggle"><span>Sound effects</span><input id="soundEffectsToggle" type="checkbox" /></label>
           <label class="setting-row" for="hapticsToggle"><span>Haptic feedback</span><input id="hapticsToggle" type="checkbox" /></label>
+          <label class="setting-row" for="screenAudioToggle"><span>Play computer audio on this device</span><input id="screenAudioToggle" type="checkbox" /></label>
+          <label class="setting-row" for="smoothMotionToggle"><span>Smooth motion (best for videos)</span><input id="smoothMotionToggle" type="checkbox" /></label>
           <label class="setting-row" for="accentColorPicker"><span>Accent color</span><input id="accentColorPicker" type="color" value="#b7f36b" /></label>
         </div>
       </div>
@@ -329,9 +336,17 @@
       const streamRate = document.getElementById('streamRate');
       const streamLabel = document.getElementById('streamLabel');
       const screenMessage = document.getElementById('screenMessage');
+      const screenVideo = document.getElementById('screenVideo');
+      const screenAudioButton = document.getElementById('screenAudio');
       const screenCursor = document.getElementById('screenCursor');
       const screenTouchIndicator = document.getElementById('screenTouchIndicator');
       let screenStreaming = false;
+      let rtcPeer = null;
+      let rtcPendingCandidates = [];
+      let rtcActive = false;
+      let rtcHasAudio = false;
+      let rtcStartTimer = null;
+      let rtcDisabled = !window.RTCPeerConnection;
       let pendingFrameAck = null;
       let screenDesktopSize = null;
       let frameTimes = [];
@@ -389,6 +404,10 @@
         sound: localStorage.getItem('unire_sound_effects') !== 'false',
         haptics: localStorage.getItem('unire_haptics') !== 'false'
       };
+      const screenSettings = {
+        audio: localStorage.getItem('unire_screen_audio') === 'true',
+        smooth: localStorage.getItem('unire_screen_smooth') === 'true'
+      };
       const accentColor = localStorage.getItem('unire_accent_color') || '#b7f36b';
       let audioContext = null;
 
@@ -441,6 +460,16 @@
           localStorage.setItem('unire_haptics', String(feedbackSettings.haptics));
           provideFeedback();
         });
+        const audioToggle = document.getElementById('screenAudioToggle');
+        const smoothToggle = document.getElementById('smoothMotionToggle');
+        audioToggle.checked = screenSettings.audio;
+        smoothToggle.checked = screenSettings.smooth;
+        audioToggle.addEventListener('change', () => setScreenAudio(audioToggle.checked));
+        smoothToggle.addEventListener('change', () => {
+          screenSettings.smooth = smoothToggle.checked;
+          localStorage.setItem('unire_screen_smooth', String(screenSettings.smooth));
+          if (screenStreaming) restartScreenStream();
+        });
         accentColorPicker.addEventListener('input', () => {
           applyAccentColor(accentColorPicker.value);
           localStorage.setItem('unire_accent_color', accentColorPicker.value);
@@ -459,7 +488,6 @@
           if (trackpad) trackpad.style.display = mode === 'manual' ? 'flex' : 'none';
           if (mode === 'screen') {
             startScreenUpdates();
-            startCursorUpdates();
           } else {
             stopScreenUpdates();
             stopCursorUpdates();
@@ -467,7 +495,9 @@
         };
         switchMode = setMode;
 
-        document.getElementById('screenRefresh').addEventListener('click', refreshScreen);
+        document.getElementById('screenRefresh').addEventListener('click', restartScreenStream);
+        screenAudioButton.addEventListener('click', () => setScreenAudio(!screenSettings.audio));
+        updateAudioButton();
         document.getElementById('screenKeyboard').addEventListener('click', () => {
           screenTextInput.value = '';
           screenTextInput.focus({ preventScroll: true });
@@ -481,28 +511,43 @@
         return window.matchMedia('(orientation: portrait)').matches;
       }
 
+      // The element currently showing the desktop: WebRTC video, or the JPEG fallback image.
+      function screenMedia() {
+        return rtcActive ? screenVideo : screenImage;
+      }
+
+      function mediaSize() {
+        const media = screenMedia();
+        return media === screenVideo
+          ? { width: screenVideo.videoWidth, height: screenVideo.videoHeight }
+          : { width: screenImage.naturalWidth, height: screenImage.naturalHeight };
+      }
+
       function sourceSize() {
+        const size = mediaSize();
         return {
-          width: Math.max(1, screenDesktopSize?.width || screenImage.naturalWidth),
-          height: Math.max(1, screenDesktopSize?.height || screenImage.naturalHeight)
+          width: Math.max(1, screenDesktopSize?.width || size.width),
+          height: Math.max(1, screenDesktopSize?.height || size.height)
         };
       }
 
       // Fit the desktop frame inside the viewport; in portrait it is rotated 90deg clockwise
       // so the wide desktop uses the tall phone screen.
       function layoutScreenImage() {
-        if (!screenImage.naturalWidth) return;
+        const media = screenMedia();
+        const { width: naturalWidth, height: naturalHeight } = mediaSize();
+        if (!naturalWidth || !naturalHeight) return;
         const viewportWidth = screenViewport.clientWidth;
         const viewportHeight = screenViewport.clientHeight;
         if (!viewportWidth || !viewportHeight) return;
-        const aspect = screenImage.naturalWidth / screenImage.naturalHeight;
+        const aspect = naturalWidth / naturalHeight;
         const portrait = isPortraitView();
         const width = portrait
           ? Math.min(viewportHeight, viewportWidth * aspect)
           : Math.min(viewportWidth, viewportHeight * aspect);
-        screenImage.style.width = `${width}px`;
-        screenImage.style.height = `${width / aspect}px`;
-        screenImage.style.transform = portrait
+        media.style.width = `${width}px`;
+        media.style.height = `${width / aspect}px`;
+        media.style.transform = portrait
           ? 'translate(-50%, -50%) rotate(90deg)'
           : 'translate(-50%, -50%)';
       }
@@ -510,6 +555,69 @@
       function showScreenMessage(text) {
         screenMessage.textContent = text;
         screenMessage.hidden = !text;
+      }
+
+      function markStreamLive() {
+        showScreenMessage('');
+        streamStatus.classList.remove('offline');
+        streamStatus.classList.add('live');
+        streamLabel.textContent = rtcActive ? 'Live' : 'Live (basic)';
+      }
+
+      function countFrame() {
+        const now = performance.now();
+        frameTimes.push(now);
+        while (frameTimes.length && now - frameTimes[0] > 2000) frameTimes.shift();
+        if (frameTimes.length > 1) {
+          const framesPerSecond = (frameTimes.length - 1) * 1000 / Math.max(1, now - frameTimes[0]);
+          streamRate.textContent = `${framesPerSecond.toFixed(0)} fps`;
+        }
+      }
+
+      function updateAudioButton() {
+        const available = !rtcActive || rtcHasAudio;
+        screenAudioButton.classList.toggle('on', screenSettings.audio && available);
+        screenAudioButton.setAttribute('aria-pressed', String(screenSettings.audio));
+        screenAudioButton.querySelector('.audio-wave').style.display = screenSettings.audio ? '' : 'none';
+        screenAudioButton.querySelector('.audio-muted').style.display = screenSettings.audio ? 'none' : '';
+        screenAudioButton.title = available
+          ? (screenSettings.audio ? 'Mute computer audio on this device' : 'Play computer audio on this device')
+          : 'Computer audio is not available on this computer';
+      }
+
+      function applyScreenAudio() {
+        screenVideo.muted = !screenSettings.audio;
+        if (rtcActive && screenVideo.srcObject) {
+          screenVideo.play().catch(() => {
+            // Browser blocked audio autoplay; keep the picture running muted.
+            screenVideo.muted = true;
+            screenVideo.play().catch(() => {});
+            if (screenSettings.audio) showScreenMessage('');
+          });
+        }
+        updateAudioButton();
+      }
+
+      // Called from a tap, so the browser allows audio playback to start.
+      function setScreenAudio(enabled) {
+        screenSettings.audio = enabled;
+        localStorage.setItem('unire_screen_audio', String(enabled));
+        const toggle = document.getElementById('screenAudioToggle');
+        if (toggle) toggle.checked = enabled;
+        applyScreenAudio();
+        if (enabled && rtcActive && !rtcHasAudio) {
+          showToast('Computer audio is not available on this computer');
+        }
+      }
+
+      function showToast(text) {
+        const previous = screenMessage.textContent;
+        const wasHidden = screenMessage.hidden;
+        showScreenMessage(text);
+        setTimeout(() => {
+          if (screenMessage.textContent !== text) return;
+          if (wasHidden) showScreenMessage(''); else showScreenMessage(previous);
+        }, 2500);
       }
 
       function displayFrame(blob, desktopSize) {
@@ -530,7 +638,7 @@
 
       // The server waits for this ack before capturing the next frame.
       function handleScreenFrame(frame, ack) {
-        if (!screenStreaming) {
+        if (!screenStreaming || rtcActive) {
           if (typeof ack === 'function') ack();
           return;
         }
@@ -540,12 +648,138 @@
         displayFrame(new Blob([frame.image], { type: frame.mime || 'image/jpeg' }), size);
       }
 
-      function refreshScreen() {
-        if (screenStreaming && socket && socket.connected) {
-          socket.emit('screen:stop');
-          socket.emit('screen:start');
-          return;
+      // ---- WebRTC live view (hardware video + audio) ----
+      function closeRtc(notifyServer) {
+        clearTimeout(rtcStartTimer);
+        rtcStartTimer = null;
+        if (rtcPeer) {
+          rtcPeer.ontrack = null;
+          rtcPeer.onicecandidate = null;
+          rtcPeer.onconnectionstatechange = null;
+          rtcPeer.close();
+          rtcPeer = null;
         }
+        rtcPendingCandidates = [];
+        if (screenVideo.srcObject) {
+          screenVideo.srcObject.getTracks().forEach(track => track.stop());
+          screenVideo.srcObject = null;
+        }
+        screenVideo.classList.remove('ready');
+        if (notifyServer && socket && socket.connected) socket.emit('rtc:stop');
+        rtcActive = false;
+        rtcHasAudio = false;
+      }
+
+      function fallBackToImageStream(reason) {
+        if (!screenStreaming) return;
+        console.warn('WebRTC screen unavailable, using basic stream:', reason);
+        closeRtc(true);
+        startImageStream();
+      }
+
+      function startRtc() {
+        closeRtc(false);
+        socket.emit('rtc:start', { smooth: screenSettings.smooth }, (reply) => {
+          if (!screenStreaming) return;
+          if (!reply?.ok) {
+            if (reply?.reason === 'unsupported') rtcDisabled = true;
+            fallBackToImageStream(reply?.reason);
+            return;
+          }
+          if (reply.width && reply.height) screenDesktopSize = { width: reply.width, height: reply.height };
+        });
+        rtcStartTimer = setTimeout(() => fallBackToImageStream('timeout'), 10000);
+      }
+
+      async function handleRtcSignal(data) {
+        if (!screenStreaming || !data) return;
+        try {
+          if (data.sdp) {
+            if (rtcPeer) rtcPeer.close();
+            rtcPendingCandidates = [];
+            const pc = new RTCPeerConnection({ iceServers: [] });
+            rtcPeer = pc;
+            rtcHasAudio = Boolean(data.audio);
+            pc.onicecandidate = (event) => {
+              if (event.candidate) socket.emit('rtc:signal', { candidate: event.candidate });
+            };
+            pc.ontrack = (event) => {
+              if (screenVideo.srcObject !== event.streams[0]) {
+                screenVideo.srcObject = event.streams[0] || new MediaStream([event.track]);
+                applyScreenAudio();
+              }
+            };
+            pc.onconnectionstatechange = () => {
+              if (pc !== rtcPeer) return;
+              if (pc.connectionState === 'failed') fallBackToImageStream('connection failed');
+              if (pc.connectionState === 'disconnected') screenStatusOffline();
+            };
+            await pc.setRemoteDescription(data.sdp);
+            await pc.setLocalDescription(await pc.createAnswer());
+            socket.emit('rtc:signal', { sdp: pc.localDescription });
+            for (const candidate of rtcPendingCandidates) await pc.addIceCandidate(candidate).catch(() => {});
+            rtcPendingCandidates = [];
+          } else if (data.candidate) {
+            if (rtcPeer && rtcPeer.remoteDescription) await rtcPeer.addIceCandidate(data.candidate).catch(() => {});
+            else rtcPendingCandidates.push(data.candidate);
+          }
+        } catch (err) {
+          fallBackToImageStream(err.message);
+        }
+      }
+
+      // Count decoded frames (independent of painting, so it stays accurate when throttled).
+      let rtcFpsTimer = null;
+      function startRtcFpsMeter() {
+        clearInterval(rtcFpsTimer);
+        let lastFrames = screenVideo.getVideoPlaybackQuality?.().totalVideoFrames || 0;
+        let lastAt = performance.now();
+        rtcFpsTimer = setInterval(() => {
+          if (!rtcActive) { clearInterval(rtcFpsTimer); rtcFpsTimer = null; return; }
+          const frames = screenVideo.getVideoPlaybackQuality?.().totalVideoFrames || 0;
+          const now = performance.now();
+          streamRate.textContent = `${Math.round((frames - lastFrames) * 1000 / Math.max(1, now - lastAt))} fps`;
+          lastFrames = frames;
+          lastAt = now;
+        }, 1000);
+      }
+
+      screenVideo.addEventListener('loadedmetadata', () => {
+        if (!rtcPeer) return;
+        clearTimeout(rtcStartTimer);
+        rtcStartTimer = null;
+        rtcActive = true;
+        stopImageStream();
+        stopCursorUpdates();
+        screenImage.classList.remove('ready');
+        layoutScreenImage();
+        screenVideo.classList.add('ready');
+        markStreamLive();
+        updateAudioButton();
+        startRtcFpsMeter();
+      });
+      screenVideo.addEventListener('resize', layoutScreenImage);
+      screenVideo.addEventListener('playing', () => { if (rtcActive) markStreamLive(); });
+
+      // ---- Basic JPEG stream fallback ----
+      let imageStreaming = false;
+
+      function startImageStream() {
+        if (imageStreaming) return;
+        imageStreaming = true;
+        startCursorUpdates();
+        if (socket && socket.connected) socket.emit('screen:start');
+        else refreshScreen();
+      }
+
+      function stopImageStream() {
+        if (!imageStreaming) return;
+        imageStreaming = false;
+        releaseFrameAck();
+        if (socket && socket.connected) socket.emit('screen:stop');
+      }
+
+      function refreshScreen() {
         if (frameRequestInFlight) return;
         frameRequestInFlight = true;
         fetch(`/api/screen-image?t=${Date.now()}`, { cache: 'no-store', credentials: 'same-origin' })
@@ -559,24 +793,41 @@
           .finally(() => { frameRequestInFlight = false; });
       }
 
+      function beginScreenStream() {
+        if (!socket || !socket.connected) {
+          refreshScreen();
+          return;
+        }
+        if (rtcDisabled) startImageStream();
+        else startRtc();
+      }
+
       function startScreenUpdates() {
         if (screenStreaming) return;
         screenStreaming = true;
         frameTimes = [];
-        if (!screenImage.classList.contains('ready')) showScreenMessage('Connecting to screen\u2026');
+        streamLabel.textContent = 'Connecting';
+        if (!screenMedia().classList.contains('ready')) showScreenMessage('Connecting to screen\u2026');
         requestAnimationFrame(layoutScreenImage);
-        if (socket && socket.connected) {
-          socket.emit('screen:start');
-        } else {
-          refreshScreen();
-        }
+        beginScreenStream();
       }
 
       function stopScreenUpdates() {
         if (!screenStreaming) return;
         screenStreaming = false;
-        releaseFrameAck();
-        if (socket && socket.connected) socket.emit('screen:stop');
+        closeRtc(true);
+        stopImageStream();
+        stopCursorUpdates();
+        screenImage.classList.remove('ready');
+        streamRate.textContent = '0 fps';
+      }
+
+      function restartScreenStream() {
+        if (!screenStreaming) return;
+        closeRtc(true);
+        stopImageStream();
+        frameTimes = [];
+        beginScreenStream();
       }
 
       function startCursorUpdates() {
@@ -600,13 +851,13 @@
           if (!response.ok) return;
           const position = await response.json();
           latestCursorPosition = position;
-          if (!screenImage.classList.contains('ready')) {
+          if (rtcActive || !screenImage.classList.contains('ready')) {
             screenCursor.style.display = 'none';
             return;
           }
           const { width: imageWidth, height: imageHeight } = sourceSize();
           const viewportRect = screenViewport.getBoundingClientRect();
-          const imageRect = screenImage.getBoundingClientRect();
+          const imageRect = screenMedia().getBoundingClientRect();
           const isPortrait = isPortraitView();
           const px = Math.max(0, Math.min(1, position.x / imageWidth));
           const py = Math.max(0, Math.min(1, position.y / imageHeight));
@@ -627,7 +878,7 @@
         streamStatus.classList.remove('live');
         streamLabel.textContent = 'Offline';
         streamRate.textContent = '0 fps';
-        if (message && !screenImage.classList.contains('ready')) showScreenMessage(message);
+        if (message && !screenMedia().classList.contains('ready')) showScreenMessage(message);
       }
 
       function showTouchIndicator(event) {
@@ -651,7 +902,7 @@
         let rightClickSent = false;
 
         function screenDelta(currentPoint, previousPoint) {
-          const imageRect = screenImage.getBoundingClientRect();
+          const imageRect = screenMedia().getBoundingClientRect();
           const isPortrait = isPortraitView();
           const visualDx = currentPoint.x - previousPoint.x;
           const visualDy = currentPoint.y - previousPoint.y;
@@ -672,7 +923,7 @@
         }
 
         function screenPointToDesktop(point) {
-          const imageRect = screenImage.getBoundingClientRect();
+          const imageRect = screenMedia().getBoundingClientRect();
           const { width: sourceWidth, height: sourceHeight } = sourceSize();
           const x = Math.max(0, Math.min(imageRect.width, point.x - imageRect.left));
           const y = Math.max(0, Math.min(imageRect.height, point.y - imageRect.top));
@@ -719,12 +970,9 @@
             }
             return;
           }
-          if (latestCursorPosition && socket && !socket.disconnected) {
+          if (screenMedia().classList.contains('ready') && socket && !socket.disconnected) {
             const target = screenPointToDesktop({ x: event.clientX, y: event.clientY });
-            socket.emit('move', {
-              dx: target.x - latestCursorPosition.x,
-              dy: target.y - latestCursorPosition.y
-            });
+            socket.emit('moveTo', target);
             latestCursorPosition = target;
           }
           lastPoint = { x: event.clientX, y: event.clientY };
@@ -810,19 +1058,14 @@
       });
 
       screenImage.addEventListener('load', () => {
+        if (rtcActive || !screenStreaming) {
+          releaseFrameAck();
+          return;
+        }
         layoutScreenImage();
         screenImage.classList.add('ready');
-        showScreenMessage('');
-        streamStatus.classList.remove('offline');
-        streamStatus.classList.add('live');
-        streamLabel.textContent = 'Live';
-        const now = performance.now();
-        frameTimes.push(now);
-        while (frameTimes.length && now - frameTimes[0] > 2000) frameTimes.shift();
-        if (frameTimes.length > 1) {
-          const framesPerSecond = (frameTimes.length - 1) * 1000 / Math.max(1, now - frameTimes[0]);
-          streamRate.textContent = `${framesPerSecond.toFixed(1)} fps`;
-        }
+        markStreamLive();
+        countFrame();
         releaseFrameAck();
       });
 
@@ -849,13 +1092,21 @@
         };
 
         socket.on('screen:frame', handleScreenFrame);
+        socket.on('rtc:signal', handleRtcSignal);
+        socket.on('rtc:error', (payload) => {
+          if (rtcPeer || rtcStartTimer) fallBackToImageStream(payload?.message);
+        });
         socket.on('screen:error', (payload) => {
           screenStatusOffline(payload?.message || 'Screen capture unavailable.');
         });
 
         socket.on('connect', () => {
           setConnectionStatus('Connected');
-          if (screenStreaming) socket.emit('screen:start');
+          if (screenStreaming) {
+            closeRtc(false);
+            imageStreaming = false;
+            beginScreenStream();
+          }
           const connStatus = document.getElementById('connection-status');
           const infoIP = document.getElementById('info-ip');
           if (connStatus) connStatus.textContent = 'Connected';

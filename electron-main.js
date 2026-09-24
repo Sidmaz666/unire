@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, desktopCapturer, screen, systemPreferences } from 'electron';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { randomUUID } from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -16,11 +17,10 @@ let startServer;
 const MAX_STREAM_WIDTH = 1600;
 const STREAM_JPEG_QUALITY = 70;
 
-const CAPTURE_IDLE_MS = 30 * 1000;
+const screenHostToken = randomUUID();
 
-let captureWindow = null;
-let captureReady = null;
-let captureIdleTimer = null;
+let hostWindow = null;
+let hostReady = null;
 
 // Desktop size in the units the mouse uses: physical pixels on Windows/Linux, points on macOS.
 function primaryDisplayInfo() {
@@ -35,6 +35,11 @@ function primaryDisplayInfo() {
   };
 }
 
+function getDesktopSize() {
+  const { width, height } = primaryDisplayInfo();
+  return { width, height };
+}
+
 async function findScreenSource(thumbnailSize = { width: 0, height: 0 }) {
   const { display } = primaryDisplayInfo();
   const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize });
@@ -43,53 +48,47 @@ async function findScreenSource(thumbnailSize = { width: 0, height: 0 }) {
   return source;
 }
 
-function stopCaptureWindow() {
-  clearTimeout(captureIdleTimer);
-  captureIdleTimer = null;
-  captureReady = null;
-  if (captureWindow && !captureWindow.isDestroyed()) captureWindow.destroy();
-  captureWindow = null;
+function stopHostWindow() {
+  hostReady = null;
+  if (hostWindow && !hostWindow.isDestroyed()) hostWindow.destroy();
+  hostWindow = null;
 }
 
-// A hidden window keeps a live desktop MediaStream open, so grabbing a frame takes
-// milliseconds instead of a full desktopCapturer.getSources() round trip per frame.
-function startCaptureWindow() {
-  if (captureReady) return captureReady;
-  captureReady = (async () => {
+// A hidden window keeps a live desktop MediaStream open and streams it to phones over
+// WebRTC (hardware-encoded video + system audio). It also hands out JPEG frames for the
+// socket fallback, which takes milliseconds instead of a desktopCapturer round trip.
+function ensureHostWindow() {
+  if (hostReady) return hostReady;
+  hostReady = (async () => {
     const source = await findScreenSource();
-    captureWindow = new BrowserWindow({
+    hostWindow = new BrowserWindow({
       show: false,
       width: 320,
       height: 240,
       skipTaskbar: true,
       webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false }
     });
-    captureWindow.on('closed', () => {
-      captureWindow = null;
-      captureReady = null;
+    hostWindow.on('closed', () => {
+      hostWindow = null;
+      hostReady = null;
     });
-    await captureWindow.loadFile(join(__dirname, 'screen-capture.html'));
-    await captureWindow.webContents.executeJavaScript(
-      `window.startCapture(${JSON.stringify(source.id)}, ${MAX_STREAM_WIDTH})`
-    );
+    const query = new URLSearchParams({ token: screenHostToken, source: source.id });
+    await hostWindow.loadURL(`http://localhost:${serverInfo.port}/screen-host?${query}`);
   })();
-  captureReady.catch(() => stopCaptureWindow());
-  return captureReady;
+  hostReady.catch((err) => {
+    console.error('[screen] host window failed', err);
+    stopHostWindow();
+  });
+  return hostReady;
 }
 
 async function grabStreamFrame() {
-  await startCaptureWindow();
-  clearTimeout(captureIdleTimer);
-  captureIdleTimer = setTimeout(stopCaptureWindow, CAPTURE_IDLE_MS);
-  // The first frames can take a moment to arrive after the stream starts.
-  for (let attempt = 0; attempt < 20; attempt++) {
-    const dataUrl = await captureWindow.webContents.executeJavaScript(
-      `window.grabFrame(${STREAM_JPEG_QUALITY / 100})`
-    );
-    if (dataUrl) return Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-  throw new Error('Screen stream produced no frames');
+  await ensureHostWindow();
+  const dataUrl = await hostWindow.webContents.executeJavaScript(
+    `window.grabFrame(${STREAM_JPEG_QUALITY / 100})`
+  );
+  if (!dataUrl) throw new Error('Screen stream produced no frames');
+  return Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
 }
 
 async function grabThumbnailFrame() {
@@ -103,18 +102,16 @@ async function grabThumbnailFrame() {
   return source.thumbnail.toJPEG(STREAM_JPEG_QUALITY);
 }
 
-// Captures the primary display with Electron's native capturer (Windows, macOS, Linux).
+// JPEG capture for the socket fallback stream (Windows, macOS, Linux).
 async function captureDesktop() {
-  const { width, height } = primaryDisplayInfo();
   let image;
   try {
     image = await grabStreamFrame();
   } catch (err) {
     console.error('[screen] live stream capture failed, using thumbnail capture', err);
-    stopCaptureWindow();
     image = await grabThumbnailFrame();
   }
-  return { image, mime: 'image/jpeg', width, height };
+  return { image, mime: 'image/jpeg', ...getDesktopSize() };
 }
 
 function createWindow(port, networkIP) {
@@ -228,9 +225,10 @@ app.whenReady().then(async () => {
     process.env.UNIRE_DATA_DIR = app.getPath('userData');
     
     // Now import index.js - database will use the correct path
-    const { startServer: importedStartServer, setScreenCapturer } = await import('./index.js');
+    const { startServer: importedStartServer, setScreenCapturer, setScreenHost } = await import('./index.js');
     startServer = importedStartServer;
     setScreenCapturer(captureDesktop);
+    setScreenHost({ token: screenHostToken, ensure: ensureHostWindow, getDesktopSize });
 
     // macOS requires Screen Recording permission; asking early triggers the system prompt.
     if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('screen') !== 'granted') {
