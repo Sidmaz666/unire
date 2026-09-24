@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover" />
   <title>Remote Mouse</title>
   <style>
     * { -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; }
@@ -62,6 +62,7 @@
     #tab-info { display:none; height:100%; overflow-y:auto; }
     #pad { flex:1; display:flex; justify-content:center; align-items:center; position:relative; min-height:0; }
     #trackpad { flex:1 1 auto; display:flex; justify-content:center; align-items:center; margin:clamp(6px, 2dvw, 10px); background:rgba(255,255,255,0.03); border-radius:14px; min-height:0; touch-action:none; position:relative; transition: background 0.1s ease; }
+    #keepAwakeVideo { position:absolute; inset:0; width:100%; height:100%; opacity:0; pointer-events:none; z-index:0; }
     #trackpad.scrolling { background: linear-gradient(to right, rgba(255,255,255,0.03), rgba(0,255,255,0.15)) !important; }
     #touchArea {
       width:92%; height:80%; border-radius:14px; background:rgba(255,255,255,0.03);
@@ -72,11 +73,12 @@
     #keyboardMode { 
       width:100%; 
       background:#0f0f0f; 
-      flex:0 1 auto;
-      height:62dvh;
-      max-height:none;
+      /* Hug the keys (no empty band below them); the trackpad takes the remaining space. */
+      flex:0 0 auto;
+      height:auto;
+      max-height:70dvh;
       overflow:hidden;
-      padding:10px 4px 8px 4px; 
+      padding:10px 4px calc(6px + env(safe-area-inset-bottom)) 4px;
       box-shadow: 0 -4px 20px rgba(0,0,0,0.3);
       border-radius: 12px 12px 0 0;
       box-sizing: border-box;
@@ -91,7 +93,6 @@
       box-sizing: border-box;
     }
     @media (orientation: landscape) {
-      #keyboardMode { height:62dvh; }
       .key { min-height:clamp(22px, 5dvh, 38px); padding:clamp(2px, .6dvh, 6px) 2px; font-size:clamp(9px, 1.8dvw, 13px); }
       .key-desktop { min-height:clamp(18px, 4dvh, 28px); }
     }
@@ -100,7 +101,6 @@
       #screenViewport { border-radius:10px; }
       .screen-action { min-height:34px; padding:8px 10px; }
       .controls-wrapper { padding-inline:34px; }
-      #keyboardMode { height:62dvh; }
       .key { min-height:clamp(20px, 4.2dvh, 32px); padding:2px; font-size:clamp(9px, 2.7vw, 12px); border-radius:5px; }
       .keyboard-row { gap:2px; }
     }
@@ -222,7 +222,7 @@
 
       <!-- Keyboard Tab -->
       <div id="tab-keyboard" class="mode-panel">
-        <div id="trackpad">
+        <div id="trackpad"><video id="keepAwakeVideo" muted playsinline loop aria-hidden="true"></video>
           <div style="text-align:center; color:#999; font-size:14px;">
             Touch and drag here to move mouse
             <div id="trackpadCursor" style="position:absolute; width:10px; height:10px; background:#0f0; border-radius:50%; pointer-events:none; opacity:0.7; display:none; box-shadow: 0 0 8px rgba(0,255,0,0.6); transform: translate(-50%, -50%);"></div>
@@ -242,6 +242,7 @@
           <label class="setting-row" for="hapticsToggle"><span>Haptic feedback</span><input id="hapticsToggle" type="checkbox" /></label>
           <label class="setting-row" for="screenAudioToggle"><span>Play computer audio on this device</span><input id="screenAudioToggle" type="checkbox" /></label>
           <label class="setting-row" for="muteHostToggle"><span>Mute computer speakers while routing</span><input id="muteHostToggle" type="checkbox" /></label>
+          <label class="setting-row" for="keepAwakeToggle"><span>Keep phone screen awake</span><input id="keepAwakeToggle" type="checkbox" /></label>
           <label class="setting-row" for="smoothMotionToggle"><span>Smooth motion (best for videos)</span><input id="smoothMotionToggle" type="checkbox" /></label>
           <label class="setting-row" for="accentColorPicker"><span>Accent color</span><input id="accentColorPicker" type="color" value="#b7f36b" /></label>
         </div>
@@ -422,7 +423,8 @@
       const screenSettings = {
         // Audio routing always starts off: browsers only allow sound after a tap.
         audio: false,
-        smooth: localStorage.getItem('unire_screen_smooth') === 'true'
+        smooth: localStorage.getItem('unire_screen_smooth') === 'true',
+        keepAwake: localStorage.getItem('unire_keep_awake') !== 'false'
       };
       const accentColor = localStorage.getItem('unire_accent_color') || '#b7f36b';
       let audioContext = null;
@@ -482,6 +484,13 @@
         smoothToggle.checked = screenSettings.smooth;
         audioToggle.addEventListener('change', () => setScreenAudio(audioToggle.checked));
         document.getElementById('muteHostToggle').addEventListener('change', (event) => setHostMuted(event.target.checked));
+        const keepAwakeToggle = document.getElementById('keepAwakeToggle');
+        keepAwakeToggle.checked = screenSettings.keepAwake;
+        keepAwakeToggle.addEventListener('change', () => {
+          screenSettings.keepAwake = keepAwakeToggle.checked;
+          localStorage.setItem('unire_keep_awake', String(screenSettings.keepAwake));
+          if (screenSettings.keepAwake) enableKeepAwake(); else disableKeepAwake();
+        });
         smoothToggle.addEventListener('change', () => {
           screenSettings.smooth = smoothToggle.checked;
           localStorage.setItem('unire_screen_smooth', String(screenSettings.smooth));
@@ -721,6 +730,11 @@
               if (event.candidate) socket.emit('rtc:signal', { kind: 'audio', candidate: event.candidate });
             };
             pc.ontrack = (event) => {
+              if ('mediaSession' in navigator && window.MediaMetadata) {
+                navigator.mediaSession.metadata = new MediaMetadata({ title: 'Computer audio', artist: 'Unire Remote' });
+                try { navigator.mediaSession.setActionHandler('pause', () => setScreenAudio(false)); } catch {}
+                try { navigator.mediaSession.setActionHandler('stop', () => setScreenAudio(false)); } catch {}
+              }
               audioReceiver = event.receiver;
               minimizeReceiverDelay(event.receiver);
               startAvSync();
@@ -914,6 +928,81 @@
       });
       screenVideo.addEventListener('resize', layoutScreenImage);
       screenVideo.addEventListener('playing', () => { if (rtcActive) markStreamLive(); });
+
+      // ---- Staying connected ----
+      // Phones freeze pages when the screen sleeps or the browser is in the background, which
+      // drops the connection. Keep the screen awake while the remote is open, and reconnect
+      // everything immediately when the page comes back.
+      let screenWakeLock = null;
+      let keepAwakeStream = null;
+
+      async function enableKeepAwake() {
+        if (!screenSettings.keepAwake || document.visibilityState !== 'visible') return;
+        if ('wakeLock' in navigator) {
+          try {
+            if (!screenWakeLock) {
+              screenWakeLock = await navigator.wakeLock.request('screen');
+              screenWakeLock.addEventListener('release', () => { screenWakeLock = null; });
+            }
+            return;
+          } catch {}
+        }
+        // Plain-HTTP pages on the LAN have no Wake Lock API; a playing video keeps the
+        // screen on instead.
+        const video = document.getElementById('keepAwakeVideo');
+        if (!video) return;
+        if (!keepAwakeStream) {
+          const canvas = document.createElement('canvas');
+          canvas.width = 16;
+          canvas.height = 16;
+          canvas.getContext('2d').fillRect(0, 0, 16, 16);
+          keepAwakeStream = canvas.captureStream(1);
+          video.srcObject = keepAwakeStream;
+        }
+        video.play().catch(() => {});
+      }
+
+      function disableKeepAwake() {
+        if (screenWakeLock) screenWakeLock.release().catch(() => {});
+        screenWakeLock = null;
+        const video = document.getElementById('keepAwakeVideo');
+        if (video) video.pause();
+      }
+
+      function forceReconnect() {
+        if (!socket) return;
+        socket.disconnect();
+        socket.connect();
+      }
+
+      function resumeConnection() {
+        if (document.visibilityState !== 'visible' || !socket) return;
+        enableKeepAwake();
+        if (socket.disconnected) {
+          // Skip the reconnection back-off and connect right away.
+          forceReconnect();
+          return;
+        }
+        // The socket can look connected after a freeze while the link is actually dead.
+        socket.timeout(2500).emit('keepalive', (err) => {
+          if (err) return forceReconnect();
+          if (!inputReliable || inputReliable.readyState !== 'open') startInputChannel();
+          if (screenSettings.audio && !audioStarting &&
+              (!audioPeer || !['connected', 'connecting', 'new'].includes(audioPeer.connectionState))) {
+            startAudioRoute();
+          }
+          if (screenStreaming && rtcPeer && ['failed', 'disconnected'].includes(rtcPeer.connectionState)) {
+            restartScreenStream();
+          }
+        });
+      }
+
+      document.addEventListener('visibilitychange', resumeConnection);
+      window.addEventListener('pageshow', resumeConnection);
+      window.addEventListener('focus', resumeConnection);
+      window.addEventListener('online', resumeConnection);
+      // Wake lock and video playback need a user gesture on some phones.
+      document.addEventListener('pointerdown', () => { if (!screenWakeLock) enableKeepAwake(); }, { passive: true });
 
       // ---- Low-latency input over WebRTC data channels ----
       // Moves/scrolls use an unordered, no-retransmit channel so a lost Wi-Fi packet is
@@ -1323,8 +1412,8 @@
         socket = io({
           reconnection: true,
           reconnectionAttempts: Infinity,
-          reconnectionDelay: 500,
-          reconnectionDelayMax: 5000,
+          reconnectionDelay: 300,
+          reconnectionDelayMax: 2000,
           timeout: 10000
         });
 
@@ -1361,6 +1450,7 @@
 
         socket.on('connect', () => {
           setConnectionStatus('Connected');
+          enableKeepAwake();
           startInputChannel();
           if (screenSettings.audio && !audioStarting) startAudioRoute();
           if (screenStreaming) {

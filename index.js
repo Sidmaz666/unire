@@ -22,8 +22,13 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = http.createServer(app);
 const io = new IOServer(server, {
+  // Phones freeze pages when the screen is off or the browser is in the background.
+  // A long ping timeout keeps the connection through short freezes, and state recovery
+  // restores it seamlessly after longer ones.
+  pingInterval: 25000,
+  pingTimeout: 60000,
   connectionStateRecovery: {
-    maxDisconnectionDuration: 2 * 60 * 1000,
+    maxDisconnectionDuration: 10 * 60 * 1000,
     skipMiddlewares: false
   }
 });
@@ -555,6 +560,11 @@ io.on("connection", (socket) => {
 
   socket.on("screen:stop", () => {
     screenStreaming = false;
+  });
+
+  // Lets a phone that just came back to the page confirm the connection is still alive.
+  socket.on("keepalive", (ack) => {
+    if (typeof ack === "function") ack();
   });
 
   socket.on("move", (data) => {
