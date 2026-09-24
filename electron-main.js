@@ -73,6 +73,7 @@ function ensureHostWindow() {
         contextIsolation: true,
         nodeIntegration: false,
         backgroundThrottling: false,
+        autoplayPolicy: 'no-user-gesture-required',
         preload: join(__dirname, 'electron', 'screen-host-preload.cjs')
       }
     });

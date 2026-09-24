@@ -26,6 +26,8 @@ A cross-platform desktop remote control application that allows you to control y
 - **Cross-Platform Desktop**: Works on Windows, macOS, and Linux
 - **Live Screen View**: Watch and control the desktop from your phone over WebRTC (hardware-encoded video, up to 60 fps), rotated to fill the screen in portrait
 - **Audio to Phone**: The **Audio** button plays the computer's sound on the phone, with or without the screen view
+- **Background Audio**: Keeps playing with the phone screen off or in another app, with the phone's media notification and lock-screen controls (realtime WebRTC audio while the remote is on screen, a regular audio stream in the background)
+- **Persistent Connection**: Audio and control links survive the socket dropping while the phone sleeps; everything reconnects instantly when you return
 - **Mute Host**: Silences the computer's speakers while audio keeps playing on the phone (Windows); the speakers come back as soon as routing stops
 - **Low-Latency Input**: Mouse moves and scrolls use an unordered WebRTC data channel, clicks and keys a reliable one, with Socket.IO as automatic fallback
 - **Session Management**: Secure session-based authentication with 6-hour expiry

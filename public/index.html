@@ -215,7 +215,7 @@
             <button id="screenClose" class="screen-action" title="Return to manual" aria-label="Return to manual">&times;</button>
           </div>
         </div>
-        <div id="screenViewport"><video id="screenVideo" playsinline autoplay muted></video><audio id="routedAudio" autoplay playsinline></audio><img id="screenImage" alt="Live desktop screen" /><span id="screenMessage">Connecting to screen&hellip;</span><span id="screenCursor" aria-hidden="true"></span><span id="screenTouchIndicator" aria-hidden="true"></span></div>
+        <div id="screenViewport"><video id="screenVideo" playsinline autoplay muted></video><audio id="routedAudio" autoplay playsinline></audio><audio id="backgroundAudio" playsinline preload="none"></audio><img id="screenImage" alt="Live desktop screen" /><span id="screenMessage">Connecting to screen&hellip;</span><span id="screenCursor" aria-hidden="true"></span><span id="screenTouchIndicator" aria-hidden="true"></span></div>
       </section>
 
       <!-- Remote Tab (formerly Keyboard) -->
@@ -360,6 +360,9 @@
       let lastVideoBuffer = null;
       const hostAudioState = { muted: false, muteSupported: true };
       const routedAudio = document.getElementById('routedAudio');
+      const backgroundAudio = document.getElementById('backgroundAudio');
+      let backgroundAudioRetry = null;
+      let audioPausedByUser = false;
       let toastTimer = null;
       let rtcStartTimer = null;
       let rtcDisabled = !window.RTCPeerConnection;
@@ -688,12 +691,106 @@
         }
       }
 
-      function startAudioRoute() {
-        if (!socket || !socket.connected || !window.RTCPeerConnection) {
-          showToast('Audio needs a live connection to the computer');
-          stopAudioRoute(false);
-          return;
+      // ---- Background audio: regular media element fed by /api/audio-stream ----
+      // Android only shows the media notification and keeps playing in the background for
+      // URL-based media (not WebRTC streams). While the page is visible the realtime WebRTC
+      // audio is heard and this element runs silently; when the screen turns off or the app
+      // is switched, sound moves to this element.
+      function canSetVolume() {
+        const previous = backgroundAudio.volume;
+        backgroundAudio.volume = 0.5;
+        const supported = backgroundAudio.volume === 0.5;
+        backgroundAudio.volume = previous;
+        return supported;
+      }
+      const volumeControllable = canSetVolume();
+
+      function startBackgroundAudio() {
+        clearTimeout(backgroundAudioRetry);
+        backgroundAudio.src = `/api/audio-stream?t=${Date.now()}`;
+        applyAudioOutput();
+        backgroundAudio.play().catch(() => {});
+        setupMediaSession();
+      }
+
+      function stopBackgroundAudio() {
+        clearTimeout(backgroundAudioRetry);
+        backgroundAudioRetry = null;
+        backgroundAudio.pause();
+        backgroundAudio.removeAttribute('src');
+        backgroundAudio.load();
+        if ('mediaSession' in navigator) {
+          navigator.mediaSession.metadata = null;
+          navigator.mediaSession.playbackState = 'none';
         }
+      }
+
+      function retryBackgroundAudio() {
+        if (!screenSettings.audio || audioPausedByUser) return;
+        clearTimeout(backgroundAudioRetry);
+        backgroundAudioRetry = setTimeout(startBackgroundAudio, 1500);
+      }
+
+      // Decide which element is audible. The background element is never muted (only its
+      // volume changes) so Android keeps treating it as an audible media player.
+      function applyAudioOutput() {
+        if (!screenSettings.audio) return;
+        const hidden = document.visibilityState === 'hidden';
+        const realtimeReady = Boolean(audioPeer && audioPeer.connectionState === 'connected' && routedAudio.srcObject);
+        const useBackground = hidden || !realtimeReady;
+        if (useBackground && backgroundAudio.buffered.length) {
+          // Jump to the live edge so the handover doesn't replay old audio.
+          const liveEdge = backgroundAudio.buffered.end(backgroundAudio.buffered.length - 1);
+          if (liveEdge - backgroundAudio.currentTime > 0.6) backgroundAudio.currentTime = liveEdge - 0.25;
+        }
+        if (volumeControllable) {
+          backgroundAudio.muted = false;
+          backgroundAudio.volume = useBackground && !audioPausedByUser ? 1 : 0;
+        } else {
+          // iOS ignores volume; fall back to muting.
+          backgroundAudio.muted = !useBackground || audioPausedByUser;
+        }
+        routedAudio.muted = useBackground || audioPausedByUser;
+      }
+
+      function setupMediaSession() {
+        if (!('mediaSession' in navigator) || !window.MediaMetadata) return;
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: 'Computer audio',
+          artist: 'Unire Remote',
+          artwork: [{ src: '/icon.png', sizes: '256x256', type: 'image/png' }]
+        });
+        navigator.mediaSession.playbackState = 'playing';
+        const handlers = {
+          play: () => {
+            audioPausedByUser = false;
+            backgroundAudio.play().catch(() => {});
+            navigator.mediaSession.playbackState = 'playing';
+            applyAudioOutput();
+          },
+          pause: () => {
+            audioPausedByUser = true;
+            navigator.mediaSession.playbackState = 'paused';
+            applyAudioOutput();
+          },
+          stop: () => setScreenAudio(false)
+        };
+        for (const [action, handler] of Object.entries(handlers)) {
+          try { navigator.mediaSession.setActionHandler(action, handler); } catch {}
+        }
+      }
+
+      backgroundAudio.addEventListener('error', retryBackgroundAudio);
+      backgroundAudio.addEventListener('ended', retryBackgroundAudio);
+      backgroundAudio.addEventListener('stalled', () => {
+        // A stalled live stream is restarted rather than left silent.
+        if (screenSettings.audio && document.visibilityState === 'hidden') retryBackgroundAudio();
+      });
+      document.addEventListener('visibilitychange', applyAudioOutput);
+
+      // Realtime (WebRTC) audio link.
+      function startAudioRoute() {
+        if (!socket || !socket.connected || !window.RTCPeerConnection) return;
         closeAudioPeer();
         audioStarting = true;
         // Unlock playback inside the tap so the stream can start with sound later.
@@ -711,7 +808,9 @@
       function stopAudioRoute(notifyServer = true) {
         screenSettings.audio = false;
         audioStarting = false;
+        audioPausedByUser = false;
         closeAudioPeer();
+        stopBackgroundAudio();
         if (notifyServer && socket && socket.connected) {
           socket.emit('audio:stop');
           if (hostAudioState.muted) socket.emit('host-audio:mute', { muted: false });
@@ -730,24 +829,18 @@
               if (event.candidate) socket.emit('rtc:signal', { kind: 'audio', candidate: event.candidate });
             };
             pc.ontrack = (event) => {
-              if ('mediaSession' in navigator && window.MediaMetadata) {
-                navigator.mediaSession.metadata = new MediaMetadata({ title: 'Computer audio', artist: 'Unire Remote' });
-                try { navigator.mediaSession.setActionHandler('pause', () => setScreenAudio(false)); } catch {}
-                try { navigator.mediaSession.setActionHandler('stop', () => setScreenAudio(false)); } catch {}
-              }
               audioReceiver = event.receiver;
               minimizeReceiverDelay(event.receiver);
               startAvSync();
               routedAudio.srcObject = event.streams[0] || new MediaStream([event.track]);
-              routedAudio.muted = false;
-              routedAudio.play().catch(() => showToast('Tap Audio again to allow sound on this device'));
+              routedAudio.play().catch(() => {});
+              applyAudioOutput();
             };
             pc.onconnectionstatechange = () => {
               if (pc !== audioPeer) return;
-              if (pc.connectionState === 'failed') {
-                showToast('Audio connection lost');
-                stopAudioRoute();
-              }
+              // The background stream covers any gap; the realtime link is rebuilt on resume.
+              if (pc.connectionState === 'failed') closeAudioPeer();
+              applyAudioOutput();
             };
             await pc.setRemoteDescription(data.sdp);
             await pc.setLocalDescription(await pc.createAnswer());
@@ -759,8 +852,8 @@
             else audioPendingCandidates.push(data.candidate);
           }
         } catch {
-          showToast('Could not start computer audio');
-          stopAudioRoute();
+          closeAudioPeer();
+          applyAudioOutput();
         }
       }
 
@@ -769,7 +862,9 @@
         if (enabled === screenSettings.audio) return updateAudioButton();
         if (enabled) {
           screenSettings.audio = true;
+          audioPausedByUser = false;
           updateAudioButton();
+          startBackgroundAudio();
           startAudioRoute();
         } else {
           stopAudioRoute();
@@ -975,6 +1070,20 @@
         socket.connect();
       }
 
+      // WebRTC links are peer-to-peer and outlive the socket; only rebuild dead ones.
+      function inputLinkAlive() {
+        return Boolean(inputReliable && inputReliable.readyState === 'open');
+      }
+
+      function audioLinkAlive() {
+        return Boolean(audioPeer && !['failed', 'closed'].includes(audioPeer.connectionState));
+      }
+
+      // Input can go over the direct data channel even while the socket is reconnecting.
+      function inputReady() {
+        return inputLinkAlive() || Boolean(socket && socket.connected);
+      }
+
       function resumeConnection() {
         if (document.visibilityState !== 'visible' || !socket) return;
         enableKeepAwake();
@@ -986,11 +1095,9 @@
         // The socket can look connected after a freeze while the link is actually dead.
         socket.timeout(2500).emit('keepalive', (err) => {
           if (err) return forceReconnect();
-          if (!inputReliable || inputReliable.readyState !== 'open') startInputChannel();
-          if (screenSettings.audio && !audioStarting &&
-              (!audioPeer || !['connected', 'connecting', 'new'].includes(audioPeer.connectionState))) {
-            startAudioRoute();
-          }
+          if (!inputLinkAlive()) startInputChannel();
+          if (screenSettings.audio && !audioStarting && !audioLinkAlive()) startAudioRoute();
+          if (screenSettings.audio && !audioPausedByUser && (backgroundAudio.paused || backgroundAudio.error)) startBackgroundAudio();
           if (screenStreaming && rtcPeer && ['failed', 'disconnected'].includes(rtcPeer.connectionState)) {
             restartScreenStream();
           }
@@ -1282,7 +1389,7 @@
             clearTimeout(dragIntentTimer);
             dragIntentTimer = null;
           }
-          if (dragging && socket && !socket.disconnected) {
+          if (dragging && inputReady()) {
             sendInput('mouseup', { button: 'left' });
           }
           dragging = false;
@@ -1299,13 +1406,13 @@
             lastPoint = null;
             moved = true;
             dragging = false;
-            if (!rightClickSent && socket && !socket.disconnected) {
+            if (!rightClickSent && inputReady()) {
               sendInput('click', { button: 'right' });
               rightClickSent = true;
             }
             return;
           }
-          if (screenMedia().classList.contains('ready') && socket && !socket.disconnected) {
+          if (screenMedia().classList.contains('ready') && inputReady()) {
             const target = screenPointToDesktop({ x: event.clientX, y: event.clientY });
             sendInput('moveTo', target);
             latestCursorPosition = target;
@@ -1320,7 +1427,7 @@
         });
 
         screenViewport.addEventListener('pointermove', (event) => {
-          if (!lastPoint || !socket || socket.disconnected) return;
+          if (!lastPoint || !inputReady()) return;
           event.preventDefault();
           showTouchIndicator(event);
           const delta = screenDelta(
@@ -1357,7 +1464,7 @@
             return;
           }
           if (!lastPoint) return;
-          if (!moved && socket && !socket.disconnected) {
+          if (!moved && inputReady()) {
             sendInput('click', { button: 'left' });
           }
           releaseScreenDrag();
@@ -1408,8 +1515,20 @@
       window.addEventListener('orientationchange', () => setTimeout(layoutScreenImage, 150));
       if (window.ResizeObserver) new ResizeObserver(layoutScreenImage).observe(screenViewport);
 
+      // Stable per-tab id so the computer recognises this phone across reconnects.
+      function getClientId() {
+        let id = null;
+        try { id = sessionStorage.getItem('unire_client_id'); } catch {}
+        if (!id) {
+          id = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`);
+          try { sessionStorage.setItem('unire_client_id', id); } catch {}
+        }
+        return id;
+      }
+
       function initSocket(){
         socket = io({
+          auth: { clientId: getClientId() },
           reconnection: true,
           reconnectionAttempts: Infinity,
           reconnectionDelay: 300,
@@ -1451,8 +1570,8 @@
         socket.on('connect', () => {
           setConnectionStatus('Connected');
           enableKeepAwake();
-          startInputChannel();
-          if (screenSettings.audio && !audioStarting) startAudioRoute();
+          if (!inputLinkAlive()) startInputChannel();
+          if (screenSettings.audio && !audioStarting && !audioLinkAlive()) startAudioRoute();
           if (screenStreaming) {
             closeRtc(false);
             imageStreaming = false;
@@ -1479,8 +1598,8 @@
         socket.io.on('reconnect_failed', () => setConnectionStatus('Disconnected'));
         socket.on('disconnect', () => {
           setConnectionStatus('Reconnecting');
-          closeInputChannel();
-          closeAudioPeer();
+          // Keep audio and input links: they don't need the socket and keep working while
+          // the phone screen is off.
           pendingFrameAck = null;
           if (screenStreaming) screenStatusOffline();
         });
@@ -1550,7 +1669,7 @@
               dragHoldTimer = setTimeout(() => {
                 isDragModeEnabled = true;
                 isDragging = true;
-                if (socket && !socket.disconnected) {
+                if (inputReady()) {
                   sendInput('mousedown', { button: 'left' });
                 }
                 // Show drag badge
@@ -1597,7 +1716,7 @@
           if (isDragging) {
             cursorIndicator.style.left = touchX + 'px';
             cursorIndicator.style.top = touchY + 'px';
-            if (!socket || socket.disconnected) return;
+            if (!inputReady()) return;
             let sendDx = Math.round(dx);
             let sendDy = Math.round(dy);
             if (sendDx === 0 && dx !== 0) sendDx = dx > 0 ? 1 : -1;
@@ -1617,7 +1736,7 @@
             if (dragDistance > 2) {
               // Start dragging - press mouse button down
               isDragging = true;
-              if (!socket || socket.disconnected) return;
+              if (!inputReady()) return;
               sendInput('mousedown', { button: 'left' });
               // Move cursor immediately
               cursorIndicator.style.left = touchX + 'px';
@@ -1636,7 +1755,7 @@
           // If already in scroll mode, stay in scroll mode
           if (isScrolling) {
             // Send scroll events - intensity based on movement speed
-            if (!socket || socket.disconnected) return;
+            if (!inputReady()) return;
             
             // Calculate scroll delta based on vertical movement
             // dy > 0 (dragging down) → positive delta → scroll down
@@ -1662,7 +1781,7 @@
             provideFeedback();
             
             // Send initial scroll
-            if (!socket || socket.disconnected) return;
+            if (!inputReady()) return;
             const scrollDelta = Math.round(dy * sensitivity * 4);
             if (Math.abs(scrollDelta) >= 2) {
               sendInput('scroll', { delta: scrollDelta });
@@ -1675,7 +1794,7 @@
           cursorIndicator.style.left = touchX + 'px';
           cursorIndicator.style.top = touchY + 'px';
 
-          if (!socket || socket.disconnected) return;
+          if (!inputReady()) return;
           
           let sendDx = Math.round(dx);
           let sendDy = Math.round(dy);
@@ -1693,7 +1812,7 @@
           
           // If dragging, release mouse button
           if (isDragging) {
-            if (socket && !socket.disconnected) {
+            if (inputReady()) {
               sendInput('mouseup', { button: 'left' });
             }
             isDragging = false;
@@ -1725,7 +1844,7 @@
           
           // If dragging, release mouse button
           if (isDragging) {
-            if (socket && !socket.disconnected) {
+            if (inputReady()) {
               sendInput('mouseup', { button: 'left' });
             }
             isDragging = false;
@@ -1814,7 +1933,7 @@
               trackpadDragHoldTimer = setTimeout(() => {
                 trackpadIsDragModeEnabled = true;
                 trackpadIsDragging = true;
-                if (socket && !socket.disconnected) sendInput('mousedown', { button: 'left' });
+                if (inputReady()) sendInput('mousedown', { button: 'left' });
                 let badge = trackpad.querySelector('.drag-badge');
                 if (!badge) { badge = document.createElement('div'); badge.className = 'drag-badge'; badge.textContent = 'Drag Select'; trackpad.appendChild(badge); }
                 badge.style.display = 'inline-block';
@@ -1894,7 +2013,7 @@
               trackpadCursor.style.left = touchX + 'px';
               trackpadCursor.style.top = touchY + 'px';
             }
-            if (!socket || socket.disconnected) return;
+            if (!inputReady()) return;
             let sendDx = Math.round(dx);
             let sendDy = Math.round(dy);
             if (sendDx === 0 && dx !== 0) sendDx = dx > 0 ? 1 : -1;
@@ -1914,7 +2033,7 @@
             if (dragDistance > 2) {
               // Start dragging - press mouse button down
               trackpadIsDragging = true;
-              if (!socket || socket.disconnected) return;
+              if (!inputReady()) return;
               sendInput('mousedown', { button: 'left' });
               // Move cursor immediately
               const trackpadCursor = document.getElementById('trackpadCursor');
@@ -1936,7 +2055,7 @@
             // If already in scroll mode, stay in scroll mode
             if (trackpadIsScrolling) {
               // Send scroll events
-              if (!socket || socket.disconnected) return;
+              if (!inputReady()) return;
               
               const scrollDelta = Math.round(dy * sensitivity * 4); // Amplify scroll
               
@@ -1961,7 +2080,7 @@
               provideFeedback();
               
               // Send initial scroll
-              if (!socket || socket.disconnected) return;
+              if (!inputReady()) return;
               const scrollDelta = Math.round(dy * sensitivity * 4);
               if (Math.abs(scrollDelta) >= 2) {
                 sendInput('scroll', { delta: scrollDelta });
@@ -1976,7 +2095,7 @@
               trackpadCursor.style.top = touchY + 'px';
             }
             
-            if (!socket || socket.disconnected) return;
+            if (!inputReady()) return;
             
             let sendDx = Math.round(dx);
             let sendDy = Math.round(dy);
@@ -1994,7 +2113,7 @@
             
             // If dragging, release mouse button
             if (trackpadIsDragging) {
-              if (socket && !socket.disconnected) {
+              if (inputReady()) {
                 sendInput('mouseup', { button: 'left' });
               }
               trackpadIsDragging = false;
@@ -2026,7 +2145,7 @@
             
             // If dragging, release mouse button
             if (trackpadIsDragging) {
-              if (socket && !socket.disconnected) {
+              if (inputReady()) {
                 sendInput('mouseup', { button: 'left' });
               }
               trackpadIsDragging = false;
@@ -2461,7 +2580,7 @@
             if (type === 'RouteAudio') { setScreenAudio(!screenSettings.audio); return; }
             if (type === 'MuteHost') { setHostMuted(!hostAudioState.muted); return; }
             if (type === 'Settings') { openSettings(); return; }
-            if (!socket || socket.disconnected) return;
+            if (!inputReady()) return;
             if (type === 'LeftClick') { sendInput('click', { button: 'left' }); return; }
             if (type === 'RightClick') { sendInput('click', { button: 'right' }); return; }
             if (type === 'Info') { openInfoModal(); return; }
@@ -2557,7 +2676,7 @@
         // Tab switching is handled above
         
         function sendKeyPress(key, options = {}) {
-          if (!socket || socket.disconnected) return;
+          if (!inputReady()) return;
           
           // Map special keys to nut-js Key enum values
           const keyMap = {

@@ -352,6 +352,39 @@ function waitForScreenHost(timeoutMs) {
   });
 }
 
+// Background audio: a plain HTTP WebM/Opus stream, so phones treat it as a normal media
+// player (media notification, lock-screen controls, keeps playing with the screen off).
+const audioHttpListeners = new Map(); // listenerId -> response
+
+app.get("/api/audio-stream", async (req, res) => {
+  if (!verifySession(req.cookies?.sid)) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  if (!screenHost) return res.status(503).json({ error: "audio unavailable" });
+  let hostSocket;
+  try {
+    if (!screenHostSocket) screenHost.ensure();
+    hostSocket = await waitForScreenHost(10000);
+  } catch {
+    return res.status(503).json({ error: "audio unavailable" });
+  }
+  const listenerId = uuidv4();
+  res.writeHead(200, {
+    "Content-Type": "audio/webm",
+    "Cache-Control": "no-store",
+    "Connection": "keep-alive",
+    "X-Content-Type-Options": "nosniff"
+  });
+  res.flushHeaders();
+  req.socket.setNoDelay(true);
+  audioHttpListeners.set(listenerId, res);
+  hostSocket.emit("audio-http:start", { listenerId });
+  req.on("close", () => {
+    audioHttpListeners.delete(listenerId);
+    if (screenHostSocket) screenHostSocket.emit("audio-http:stop", { listenerId });
+  });
+});
+
 // Page for the hidden Electron window that captures the desktop and serves WebRTC peers.
 app.get("/screen-host", (req, res) => {
   if (!screenHost || req.query.token !== screenHost.token) {
@@ -422,6 +455,17 @@ io.use((socket, next) => {
   return next();
 });
 
+// Phones are identified by a stable client id (sent on connect) rather than the socket id,
+// so WebRTC audio/input links survive the socket dropping while the phone screen is off.
+const clientSockets = new Map(); // clientId -> latest socket for that phone
+const screenStopTimers = new Map(); // clientId -> pending screen-video stop after a drop
+const SCREEN_STOP_GRACE_MS = 60 * 1000;
+
+function emitToClient(clientId, event, payload) {
+  const target = clientSockets.get(clientId);
+  if (target?.connected) target.emit(event, payload);
+}
+
 const REMOTE_INPUT_EVENTS = new Set([
   "move", "moveTo", "click", "mousedown", "mouseup", "scroll", "keyboard", "action"
 ]);
@@ -438,8 +482,9 @@ export function dispatchRemoteInput(viewerId, message) {
   }
   const event = parsed?.e;
   if (!REMOTE_INPUT_EVENTS.has(event)) return;
-  const viewerSocket = io.sockets.sockets.get(viewerId);
-  if (!viewerSocket || viewerSocket.data.isScreenHost) return;
+  // The socket may currently be disconnected (phone screen off); its handlers still work.
+  const viewerSocket = clientSockets.get(viewerId);
+  if (!viewerSocket) return;
   for (const listener of viewerSocket.listeners(event)) listener(parsed.d);
 }
 
@@ -448,10 +493,10 @@ function registerScreenHost(socket) {
   for (const waiter of [...screenHostWaiters]) waiter(socket);
 
   socket.on("rtc:signal", ({ to, data } = {}) => {
-    if (to) io.to(to).emit("rtc:signal", data);
+    if (to) emitToClient(to, "rtc:signal", data);
   });
   socket.on("rtc:error", ({ to, kind, message } = {}) => {
-    if (to) io.to(to).emit("rtc:error", { kind, message });
+    if (to) emitToClient(to, "rtc:error", { kind, message });
   });
   socket.on("host-audio:support", ({ muteSupported } = {}) => {
     hostAudio.muteSupported = Boolean(muteSupported);
@@ -460,10 +505,19 @@ function registerScreenHost(socket) {
   });
   socket.emit("host-audio:mode", { muted: hostAudio.muted });
   socket.on("input:signal", ({ to, data } = {}) => {
-    if (to) io.to(to).emit("input:signal", data);
+    if (to) emitToClient(to, "input:signal", data);
+  });
+  socket.on("audio-http:chunk", ({ listenerId, data } = {}) => {
+    const res = audioHttpListeners.get(listenerId);
+    if (res && data) res.write(Buffer.from(data));
+  });
+  socket.on("audio-http:end", ({ listenerId } = {}) => {
+    const res = audioHttpListeners.get(listenerId);
+    if (res) res.end();
   });
   socket.on("disconnect", () => {
     if (screenHostSocket === socket) screenHostSocket = null;
+    for (const res of audioHttpListeners.values()) res.end();
     io.emit("rtc:error", { message: "Screen host stopped" });
   });
 }
@@ -473,7 +527,12 @@ io.on("connection", (socket) => {
     registerScreenHost(socket);
     return;
   }
-  console.log("remote client connected", socket.id);
+  const rawClientId = socket.handshake.auth?.clientId;
+  const clientId = typeof rawClientId === "string" && /^[\w-]{8,64}$/.test(rawClientId) ? rawClientId : socket.id;
+  clientSockets.set(clientId, socket);
+  clearTimeout(screenStopTimers.get(clientId));
+  screenStopTimers.delete(clientId);
+  console.log("remote client connected", clientId);
 
   // Track position in memory to avoid slow OS queries
   let cachedPos = { x: null, y: null };
@@ -618,7 +677,7 @@ io.on("connection", (socket) => {
       if (!screenHostSocket) screenHost.ensure();
       const hostSocket = await waitForScreenHost(10000);
       hostSocket.emit("rtc:start", {
-        viewerId: socket.id,
+        viewerId: clientId,
         smooth: Boolean(options?.smooth)
       });
       reply({ ok: true, ...screenHost.getDesktopSize() });
@@ -629,11 +688,11 @@ io.on("connection", (socket) => {
   });
 
   socket.on("rtc:signal", (data) => {
-    if (screenHostSocket && data) screenHostSocket.emit("rtc:signal", { from: socket.id, data });
+    if (screenHostSocket && data) screenHostSocket.emit("rtc:signal", { from: clientId, data });
   });
 
   socket.on("rtc:stop", () => {
-    if (screenHostSocket) screenHostSocket.emit("rtc:stop", { viewerId: socket.id });
+    if (screenHostSocket) screenHostSocket.emit("rtc:stop", { viewerId: clientId });
   });
 
   // Route the computer's audio to this phone (independent of the screen view).
@@ -643,7 +702,7 @@ io.on("connection", (socket) => {
     try {
       if (!screenHostSocket) screenHost.ensure();
       const hostSocket = await waitForScreenHost(10000);
-      hostSocket.emit("rtc:start", { viewerId: socket.id, kind: "audio" });
+      hostSocket.emit("rtc:start", { viewerId: clientId, kind: "audio" });
       reply({ ok: true });
     } catch {
       reply({ ok: false, reason: "host unavailable" });
@@ -651,7 +710,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("audio:stop", () => {
-    if (screenHostSocket) screenHostSocket.emit("rtc:stop", { viewerId: socket.id, kind: "audio" });
+    if (screenHostSocket) screenHostSocket.emit("rtc:stop", { viewerId: clientId, kind: "audio" });
   });
 
   socket.on("host-audio:mute", (data) => {
@@ -676,7 +735,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("input:signal", (data) => {
-    if (screenHostSocket && data) screenHostSocket.emit("input:signal", { from: socket.id, data });
+    if (screenHostSocket && data) screenHostSocket.emit("input:signal", { from: clientId, data });
   });
 
   socket.on("click", async (data) => {
@@ -903,14 +962,18 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    console.log("client disconnected", socket.id);
+    console.log("client disconnected", clientId);
     screenStreaming = false;
     clearTimeout(resyncTimer);
-    if (screenHostSocket) {
-      screenHostSocket.emit("rtc:stop", { viewerId: socket.id });
-      screenHostSocket.emit("rtc:stop", { viewerId: socket.id, kind: "audio" });
-      screenHostSocket.emit("input:stop", { viewerId: socket.id });
-    }
+    // Audio and input links are peer-to-peer and keep working while the socket is down
+    // (e.g. phone screen off); they close on their own if the phone is really gone.
+    // Only the screen video is stopped, after a grace period, to save bandwidth.
+    clearTimeout(screenStopTimers.get(clientId));
+    screenStopTimers.set(clientId, setTimeout(() => {
+      screenStopTimers.delete(clientId);
+      if (clientSockets.get(clientId)?.connected) return;
+      if (screenHostSocket) screenHostSocket.emit("rtc:stop", { viewerId: clientId });
+    }, SCREEN_STOP_GRACE_MS));
     if (leftMouseButtonDown) {
       mouse.releaseButton(Button.LEFT).catch(() => {});
       leftMouseButtonDown = false;

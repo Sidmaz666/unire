@@ -106,7 +106,7 @@
       peer.tracks.forEach(track => track.stop());
       peer.pc.close();
       if (kind === 'screen' && !countPeers('screen')) scheduleIdleStop();
-      if (kind === 'audio' && !countPeers('audio')) stopAudioCapture();
+      if (kind === 'audio') stopAudioCaptureIfIdle();
     }
 
     // ---- System audio ----
@@ -143,16 +143,89 @@
     }
 
     function stopAudioCapture() {
+      if (mixer) {
+        mixer.context.close().catch(() => {});
+        mixer = null;
+      }
       if (!audioCapture) return;
       audioCapture.promise.then(stream => stream.getTracks().forEach(t => t.stop())).catch(() => {});
       audioCapture = null;
     }
 
+    function stopAudioCaptureIfIdle() {
+      if (!countPeers('audio') && !httpListeners.size) stopAudioCapture();
+    }
+
+    // ---- Background audio over HTTP ----
+    // Phones only give a regular URL-based media element a media notification and keep it
+    // playing in the background (WebRTC streams get neither). Each phone listening at
+    // /api/audio-stream gets its own WebM/Opus recorder whose chunks the server streams out.
+    // Recorders read from a stable Web Audio output so switching capture (Mute Host) never
+    // breaks their stream.
+    const httpListeners = new Map(); // listenerId -> MediaRecorder
+    let mixer = null; // { context, destination, source, input }
+
+    async function getMixerStream() {
+      const stream = await getAudioStream();
+      if (!mixer) {
+        const context = new AudioContext({ latencyHint: 'interactive', sampleRate: 48000 });
+        const destination = context.createMediaStreamDestination();
+        destination.channelCount = 2;
+        mixer = { context, destination, source: null, input: null };
+      }
+      if (mixer.input !== stream) {
+        if (mixer.source) mixer.source.disconnect();
+        mixer.source = mixer.context.createMediaStreamSource(stream);
+        mixer.source.connect(mixer.destination);
+        mixer.input = stream;
+      }
+      await mixer.context.resume().catch(() => {});
+      return mixer.destination.stream;
+    }
+
+    async function startHttpListener({ listenerId }) {
+      stopHttpListener({ listenerId });
+      try {
+        const stream = await getMixerStream();
+        const recorder = new MediaRecorder(stream, {
+          mimeType: 'audio/webm;codecs=opus',
+          audioBitsPerSecond: 192000
+        });
+        let sendChain = Promise.resolve();
+        recorder.ondataavailable = (event) => {
+          if (!event.data || !event.data.size) return;
+          // Keep chunks in order: arrayBuffer() resolves asynchronously.
+          sendChain = sendChain
+            .then(() => event.data.arrayBuffer())
+            .then((data) => socket.emit('audio-http:chunk', { listenerId, data }))
+            .catch(() => {});
+        };
+        recorder.onerror = () => {
+          socket.emit('audio-http:end', { listenerId });
+          stopHttpListener({ listenerId });
+        };
+        httpListeners.set(listenerId, recorder);
+        recorder.start(100);
+      } catch (err) {
+        socket.emit('audio-http:end', { listenerId });
+        stopHttpListener({ listenerId });
+      }
+    }
+
+    function stopHttpListener({ listenerId }) {
+      const recorder = httpListeners.get(listenerId);
+      if (!recorder) return;
+      httpListeners.delete(listenerId);
+      if (recorder.state !== 'inactive') recorder.stop();
+      stopAudioCaptureIfIdle();
+    }
+
     async function applyHostMute(muted) {
       hostMuted = Boolean(muted);
-      if (!countPeers('audio')) return;
+      if (!countPeers('audio') && !httpListeners.size) return;
       try {
         const stream = await getAudioStream();
+        if (httpListeners.size) await getMixerStream();
         for (const peer of peers.values()) {
           if (peer.kind !== 'audio') continue;
           const track = stream.getAudioTracks()[0].clone();
@@ -299,6 +372,8 @@
     socket.on('rtc:start', startPeer);
     socket.on('rtc:stop', ({ viewerId, kind }) => closePeer(viewerId, kind || 'screen'));
     socket.on('host-audio:mode', ({ muted }) => applyHostMute(muted));
+    socket.on('audio-http:start', startHttpListener);
+    socket.on('audio-http:stop', stopHttpListener);
     socket.on('rtc:signal', async ({ from, data }) => {
       const kind = data?.kind || 'screen';
       const peer = peers.get(peerKey(kind, from));
