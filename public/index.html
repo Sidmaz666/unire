@@ -44,6 +44,10 @@
     #screenImage, #screenVideo { position:absolute; left:50%; top:50%; display:block; max-width:none; transform-origin:center center; transform:translate(-50%, -50%); touch-action:none; pointer-events:none; visibility:hidden; background:#000; }
     #screenImage.ready, #screenVideo.ready { visibility:visible; }
     .screen-action.on { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+    .key.toggle-on { background:var(--accent) !important; color:var(--accent-ink) !important; border-color:var(--accent) !important; }
+    .key:disabled { opacity:.45; }
+    #toast { position:fixed; left:50%; bottom:calc(16px + env(safe-area-inset-bottom)); transform:translateX(-50%); max-width:calc(100vw - 32px); box-sizing:border-box; padding:10px 14px; border-radius:10px; background:#1d231f; border:1px solid var(--line); color:var(--ink); font-size:13px; text-align:center; z-index:10001; opacity:0; pointer-events:none; transition:opacity .2s ease; }
+    #toast.visible { opacity:1; }
     .screen-action:disabled { opacity:.4; }
     #screenMessage { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:20px; text-align:center; color:var(--muted); font-size:14px; pointer-events:none; }
     #screenMessage[hidden] { display:none; }
@@ -211,7 +215,7 @@
             <button id="screenClose" class="screen-action" title="Return to manual" aria-label="Return to manual">&times;</button>
           </div>
         </div>
-        <div id="screenViewport"><video id="screenVideo" playsinline autoplay muted></video><img id="screenImage" alt="Live desktop screen" /><span id="screenMessage">Connecting to screen&hellip;</span><span id="screenCursor" aria-hidden="true"></span><span id="screenTouchIndicator" aria-hidden="true"></span></div>
+        <div id="screenViewport"><video id="screenVideo" playsinline autoplay muted></video><audio id="routedAudio" autoplay playsinline></audio><img id="screenImage" alt="Live desktop screen" /><span id="screenMessage">Connecting to screen&hellip;</span><span id="screenCursor" aria-hidden="true"></span><span id="screenTouchIndicator" aria-hidden="true"></span></div>
       </section>
 
       <!-- Remote Tab (formerly Keyboard) -->
@@ -228,6 +232,7 @@
           <div id="virtualKeyboard"></div>
         </div>
       </div>
+      <div id="toast" role="status" aria-live="polite"></div>
       <input id="screenTextInput" type="text" inputmode="text" enterkeyhint="enter" autocomplete="off" autocapitalize="sentences" aria-label="Screen text input" />
 
       <div id="settingsModal" class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
@@ -236,6 +241,7 @@
           <label class="setting-row" for="soundEffectsToggle"><span>Sound effects</span><input id="soundEffectsToggle" type="checkbox" /></label>
           <label class="setting-row" for="hapticsToggle"><span>Haptic feedback</span><input id="hapticsToggle" type="checkbox" /></label>
           <label class="setting-row" for="screenAudioToggle"><span>Play computer audio on this device</span><input id="screenAudioToggle" type="checkbox" /></label>
+          <label class="setting-row" for="muteHostToggle"><span>Mute computer speakers while routing</span><input id="muteHostToggle" type="checkbox" /></label>
           <label class="setting-row" for="smoothMotionToggle"><span>Smooth motion (best for videos)</span><input id="smoothMotionToggle" type="checkbox" /></label>
           <label class="setting-row" for="accentColorPicker"><span>Accent color</span><input id="accentColorPicker" type="color" value="#b7f36b" /></label>
         </div>
@@ -344,7 +350,12 @@
       let rtcPeer = null;
       let rtcPendingCandidates = [];
       let rtcActive = false;
-      let rtcHasAudio = false;
+      let audioPeer = null;
+      let audioPendingCandidates = [];
+      let audioStarting = false;
+      const hostAudioState = { muted: false, muteSupported: true };
+      const routedAudio = document.getElementById('routedAudio');
+      let toastTimer = null;
       let rtcStartTimer = null;
       let rtcDisabled = !window.RTCPeerConnection;
       let pendingFrameAck = null;
@@ -405,7 +416,8 @@
         haptics: localStorage.getItem('unire_haptics') !== 'false'
       };
       const screenSettings = {
-        audio: localStorage.getItem('unire_screen_audio') === 'true',
+        // Audio routing always starts off: browsers only allow sound after a tap.
+        audio: false,
         smooth: localStorage.getItem('unire_screen_smooth') === 'true'
       };
       const accentColor = localStorage.getItem('unire_accent_color') || '#b7f36b';
@@ -465,6 +477,7 @@
         audioToggle.checked = screenSettings.audio;
         smoothToggle.checked = screenSettings.smooth;
         audioToggle.addEventListener('change', () => setScreenAudio(audioToggle.checked));
+        document.getElementById('muteHostToggle').addEventListener('change', (event) => setHostMuted(event.target.checked));
         smoothToggle.addEventListener('change', () => {
           screenSettings.smooth = smoothToggle.checked;
           localStorage.setItem('unire_screen_smooth', String(screenSettings.smooth));
@@ -574,50 +587,143 @@
         }
       }
 
+      // ---- Computer audio routed to this phone (own WebRTC connection) ----
       function updateAudioButton() {
-        const available = !rtcActive || rtcHasAudio;
-        screenAudioButton.classList.toggle('on', screenSettings.audio && available);
-        screenAudioButton.setAttribute('aria-pressed', String(screenSettings.audio));
-        screenAudioButton.querySelector('.audio-wave').style.display = screenSettings.audio ? '' : 'none';
-        screenAudioButton.querySelector('.audio-muted').style.display = screenSettings.audio ? 'none' : '';
-        screenAudioButton.title = available
-          ? (screenSettings.audio ? 'Mute computer audio on this device' : 'Play computer audio on this device')
-          : 'Computer audio is not available on this computer';
-      }
-
-      function applyScreenAudio() {
-        screenVideo.muted = !screenSettings.audio;
-        if (rtcActive && screenVideo.srcObject) {
-          screenVideo.play().catch(() => {
-            // Browser blocked audio autoplay; keep the picture running muted.
-            screenVideo.muted = true;
-            screenVideo.play().catch(() => {});
-            if (screenSettings.audio) showScreenMessage('');
-          });
+        const routing = screenSettings.audio;
+        screenAudioButton.classList.toggle('on', routing);
+        screenAudioButton.setAttribute('aria-pressed', String(routing));
+        screenAudioButton.querySelector('.audio-wave').style.display = routing ? '' : 'none';
+        screenAudioButton.querySelector('.audio-muted').style.display = routing ? 'none' : '';
+        screenAudioButton.title = routing ? 'Stop playing computer audio on this device' : 'Play computer audio on this device';
+        const audioToggle = document.getElementById('screenAudioToggle');
+        if (audioToggle) audioToggle.checked = routing;
+        const muteToggle = document.getElementById('muteHostToggle');
+        if (muteToggle) {
+          muteToggle.checked = hostAudioState.muted;
+          muteToggle.disabled = !hostAudioState.muteSupported;
         }
-        updateAudioButton();
-      }
-
-      // Called from a tap, so the browser allows audio playback to start.
-      function setScreenAudio(enabled) {
-        screenSettings.audio = enabled;
-        localStorage.setItem('unire_screen_audio', String(enabled));
-        const toggle = document.getElementById('screenAudioToggle');
-        if (toggle) toggle.checked = enabled;
-        applyScreenAudio();
-        if (enabled && rtcActive && !rtcHasAudio) {
-          showToast('Computer audio is not available on this computer');
+        const routeKey = document.querySelector('[data-key="RouteAudio"]');
+        if (routeKey) routeKey.classList.toggle('toggle-on', routing);
+        const muteKey = document.querySelector('[data-key="MuteHost"]');
+        if (muteKey) {
+          muteKey.classList.toggle('toggle-on', hostAudioState.muted);
+          muteKey.disabled = !hostAudioState.muteSupported;
+          const label = muteKey.querySelector('.label');
+          if (label) label.textContent = hostAudioState.muted ? 'Host Muted' : 'Mute Host';
         }
       }
 
       function showToast(text) {
-        const previous = screenMessage.textContent;
-        const wasHidden = screenMessage.hidden;
-        showScreenMessage(text);
-        setTimeout(() => {
-          if (screenMessage.textContent !== text) return;
-          if (wasHidden) showScreenMessage(''); else showScreenMessage(previous);
-        }, 2500);
+        const toast = document.getElementById('toast');
+        toast.textContent = text;
+        toast.classList.add('visible');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toast.classList.remove('visible'), 2800);
+      }
+
+      function closeAudioPeer() {
+        if (audioPeer) {
+          audioPeer.ontrack = null;
+          audioPeer.onicecandidate = null;
+          audioPeer.onconnectionstatechange = null;
+          audioPeer.close();
+        }
+        audioPeer = null;
+        audioPendingCandidates = [];
+        if (routedAudio.srcObject) {
+          routedAudio.srcObject.getTracks().forEach(track => track.stop());
+          routedAudio.srcObject = null;
+        }
+      }
+
+      function startAudioRoute() {
+        if (!socket || !socket.connected || !window.RTCPeerConnection) {
+          showToast('Audio needs a live connection to the computer');
+          stopAudioRoute(false);
+          return;
+        }
+        closeAudioPeer();
+        audioStarting = true;
+        // Unlock playback inside the tap so the stream can start with sound later.
+        routedAudio.play().catch(() => {});
+        socket.emit('audio:start', {}, (reply) => {
+          audioStarting = false;
+          if (!screenSettings.audio) return;
+          if (!reply?.ok) {
+            showToast('Computer audio is not available');
+            stopAudioRoute(false);
+          }
+        });
+      }
+
+      function stopAudioRoute(notifyServer = true) {
+        screenSettings.audio = false;
+        audioStarting = false;
+        closeAudioPeer();
+        if (notifyServer && socket && socket.connected) {
+          socket.emit('audio:stop');
+          if (hostAudioState.muted) socket.emit('host-audio:mute', { muted: false });
+        }
+        updateAudioButton();
+      }
+
+      async function handleAudioSignal(data) {
+        if (!screenSettings.audio || !data) return;
+        try {
+          if (data.sdp) {
+            closeAudioPeer();
+            const pc = new RTCPeerConnection({ iceServers: [] });
+            audioPeer = pc;
+            pc.onicecandidate = (event) => {
+              if (event.candidate) socket.emit('rtc:signal', { kind: 'audio', candidate: event.candidate });
+            };
+            pc.ontrack = (event) => {
+              routedAudio.srcObject = event.streams[0] || new MediaStream([event.track]);
+              routedAudio.muted = false;
+              routedAudio.play().catch(() => showToast('Tap Audio again to allow sound on this device'));
+            };
+            pc.onconnectionstatechange = () => {
+              if (pc !== audioPeer) return;
+              if (pc.connectionState === 'failed') {
+                showToast('Audio connection lost');
+                stopAudioRoute();
+              }
+            };
+            await pc.setRemoteDescription(data.sdp);
+            await pc.setLocalDescription(await pc.createAnswer());
+            socket.emit('rtc:signal', { kind: 'audio', sdp: pc.localDescription });
+            for (const candidate of audioPendingCandidates) await pc.addIceCandidate(candidate).catch(() => {});
+            audioPendingCandidates = [];
+          } else if (data.candidate) {
+            if (audioPeer && audioPeer.remoteDescription) await audioPeer.addIceCandidate(data.candidate).catch(() => {});
+            else audioPendingCandidates.push(data.candidate);
+          }
+        } catch {
+          showToast('Could not start computer audio');
+          stopAudioRoute();
+        }
+      }
+
+      // Called from a tap, so the browser allows audio playback to start.
+      function setScreenAudio(enabled) {
+        if (enabled === screenSettings.audio) return updateAudioButton();
+        if (enabled) {
+          screenSettings.audio = true;
+          updateAudioButton();
+          startAudioRoute();
+        } else {
+          stopAudioRoute();
+        }
+      }
+
+      // Mute Host keeps streaming audio to the phone but silences the computer's speakers.
+      function setHostMuted(muted) {
+        if (!hostAudioState.muteSupported) {
+          showToast('Muting the computer is only supported on Windows');
+          return updateAudioButton();
+        }
+        if (muted && !screenSettings.audio) setScreenAudio(true);
+        if (socket && socket.connected) socket.emit('host-audio:mute', { muted });
       }
 
       function displayFrame(blob, desktopSize) {
@@ -667,7 +773,6 @@
         screenVideo.classList.remove('ready');
         if (notifyServer && socket && socket.connected) socket.emit('rtc:stop');
         rtcActive = false;
-        rtcHasAudio = false;
       }
 
       function fallBackToImageStream(reason) {
@@ -692,6 +797,7 @@
       }
 
       async function handleRtcSignal(data) {
+        if (data?.kind === 'audio') return handleAudioSignal(data);
         if (!screenStreaming || !data) return;
         try {
           if (data.sdp) {
@@ -699,14 +805,13 @@
             rtcPendingCandidates = [];
             const pc = new RTCPeerConnection({ iceServers: [] });
             rtcPeer = pc;
-            rtcHasAudio = Boolean(data.audio);
             pc.onicecandidate = (event) => {
               if (event.candidate) socket.emit('rtc:signal', { candidate: event.candidate });
             };
             pc.ontrack = (event) => {
               if (screenVideo.srcObject !== event.streams[0]) {
                 screenVideo.srcObject = event.streams[0] || new MediaStream([event.track]);
-                applyScreenAudio();
+                screenVideo.play().catch(() => {});
               }
             };
             pc.onconnectionstatechange = () => {
@@ -1187,7 +1292,19 @@
         socket.on('rtc:signal', handleRtcSignal);
         socket.on('input:signal', handleInputSignal);
         socket.on('rtc:error', (payload) => {
+          if (payload?.kind === 'audio') {
+            if (screenSettings.audio) {
+              showToast(payload.message || 'Computer audio is not available');
+              stopAudioRoute();
+            }
+            return;
+          }
           if (rtcPeer || rtcStartTimer) fallBackToImageStream(payload?.message);
+        });
+        socket.on('host-audio:state', (state) => {
+          hostAudioState.muted = Boolean(state?.muted);
+          hostAudioState.muteSupported = state?.muteSupported !== false;
+          updateAudioButton();
         });
         socket.on('screen:error', (payload) => {
           screenStatusOffline(payload?.message || 'Screen capture unavailable.');
@@ -1196,6 +1313,7 @@
         socket.on('connect', () => {
           setConnectionStatus('Connected');
           startInputChannel();
+          if (screenSettings.audio && !audioStarting) startAudioRoute();
           if (screenStreaming) {
             closeRtc(false);
             imageStreaming = false;
@@ -1223,6 +1341,7 @@
         socket.on('disconnect', () => {
           setConnectionStatus('Reconnecting');
           closeInputChannel();
+          closeAudioPeer();
           pendingFrameAck = null;
           if (screenStreaming) screenStatusOffline();
         });
@@ -1803,7 +1922,7 @@
           const ctrlRow = document.createElement('div');
           ctrlRow.className = 'controls-scroll';
           const controls = [
-            'Screen','LeftClick','RightClick','Info',
+            'Screen','LeftClick','RightClick','RouteAudio','MuteHost','Info',
             'VolumeDown','VolumeUp','BrightnessDown','BrightnessUp',
             'OpenBrowser','OpenYouTube','Settings'
           ];
@@ -2093,6 +2212,25 @@
             const label = document.createElement('span');
             label.textContent = 'Screen';
             span.appendChild(icon); span.appendChild(label);
+          } else if (type === 'RouteAudio' || type === 'MuteHost') {
+            path.setAttribute('d', 'M4 9v6h4l5 4V5L8 9H4z');
+            path.setAttribute('fill', 'none');
+            path.setAttribute('stroke', 'currentColor');
+            path.setAttribute('stroke-width', '2');
+            path.setAttribute('stroke-linecap', 'round');
+            path.setAttribute('stroke-linejoin', 'round');
+            icon.appendChild(path);
+            const extra = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            extra.setAttribute('d', type === 'RouteAudio' ? 'M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12' : 'M17 9l5 6M22 9l-5 6');
+            extra.setAttribute('fill', 'none');
+            extra.setAttribute('stroke', 'currentColor');
+            extra.setAttribute('stroke-width', '2');
+            extra.setAttribute('stroke-linecap', 'round');
+            icon.appendChild(extra);
+            const label = document.createElement('span');
+            label.className = 'label';
+            label.textContent = type === 'RouteAudio' ? 'Audio' : 'Mute Host';
+            span.appendChild(icon); span.appendChild(label);
           } else if (type === 'LeftClick') {
             // Left arrow
             path.setAttribute('d', 'M14 7l-5 5 5 5');
@@ -2175,6 +2313,8 @@
             e.preventDefault();
             onPress();
             if (type === 'Screen') { if (switchMode) switchMode('screen'); return; }
+            if (type === 'RouteAudio') { setScreenAudio(!screenSettings.audio); return; }
+            if (type === 'MuteHost') { setHostMuted(!hostAudioState.muted); return; }
             if (type === 'Settings') { openSettings(); return; }
             if (!socket || socket.disconnected) return;
             if (type === 'LeftClick') { sendInput('click', { button: 'left' }); return; }
@@ -2186,7 +2326,14 @@
           btn.addEventListener('pointerup', (e) => { e.preventDefault(); onRelease(); });
           btn.addEventListener('pointercancel', (e) => { e.preventDefault(); onRelease(); });
           // Accessibility titles
-          btn.title = type === 'LeftClick' ? 'Left Click' : type === 'RightClick' ? 'Right Click' : 'Info';
+          const titles = {
+            LeftClick: 'Left Click',
+            RightClick: 'Right Click',
+            RouteAudio: 'Play computer audio on this device',
+            MuteHost: 'Mute the computer speakers (audio keeps playing on this device)'
+          };
+          btn.title = titles[type] || type;
+          if (type === 'RouteAudio' || type === 'MuteHost') requestAnimationFrame(updateAudioButton);
           parent.appendChild(btn);
           return btn;
         }

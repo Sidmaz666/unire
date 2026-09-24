@@ -8,9 +8,9 @@
   <canvas id="canvas"></canvas>
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    // Hidden Electron window: captures the desktop (and system audio where the OS allows it)
-    // once, then serves each phone as a WebRTC peer. Also provides JPEG frames for the
-    // socket fallback stream.
+    // Hidden Electron window: captures the desktop once and serves each phone as WebRTC
+    // peers ("screen" video, "audio" system sound, input data channels). Also provides
+    // JPEG frames for the socket fallback stream.
     const params = new URLSearchParams(location.search);
     const sourceId = params.get('source');
     const canvas = document.getElementById('canvas');
@@ -34,17 +34,8 @@
       };
     }
 
-    async function acquireMedia() {
-      try {
-        // System audio loopback works on Windows (and some Linux setups); macOS has no
-        // system audio capture, so retry video-only.
-        return await navigator.mediaDevices.getUserMedia({
-          audio: { mandatory: { chromeMediaSource: 'desktop' } },
-          video: desktopConstraints()
-        });
-      } catch {
-        return navigator.mediaDevices.getUserMedia({ audio: false, video: desktopConstraints() });
-      }
+    function acquireMedia() {
+      return navigator.mediaDevices.getUserMedia({ audio: false, video: desktopConstraints() });
     }
 
     function getMedia() {
@@ -59,7 +50,7 @@
     function scheduleIdleStop() {
       clearTimeout(idleTimer);
       idleTimer = setTimeout(async () => {
-        if (peers.size || !mediaPromise) return;
+        if (countPeers('screen') || !mediaPromise) return;
         const media = await mediaPromise.catch(() => null);
         mediaPromise = null;
         frameReaderStarted = false;
@@ -99,13 +90,104 @@
     // ---- WebRTC peers ----
     const socket = io({ auth: { captureToken: params.get('token') }, transports: ['websocket'] });
 
-    function closePeer(viewerId) {
-      const peer = peers.get(viewerId);
+    const peerKey = (kind, viewerId) => `${kind}:${viewerId}`;
+
+    function countPeers(kind) {
+      let count = 0;
+      for (const peer of peers.values()) if (peer.kind === kind) count++;
+      return count;
+    }
+
+    function closePeer(viewerId, kind = 'screen') {
+      const key = peerKey(kind, viewerId);
+      const peer = peers.get(key);
       if (!peer) return;
-      peers.delete(viewerId);
+      peers.delete(key);
       peer.tracks.forEach(track => track.stop());
       peer.pc.close();
-      if (!peers.size) scheduleIdleStop();
+      if (kind === 'screen' && !countPeers('screen')) scheduleIdleStop();
+      if (kind === 'audio' && !countPeers('audio')) stopAudioCapture();
+    }
+
+    // ---- System audio ----
+    // Captured with Electron's loopback; "loopbackWithMute" keeps capturing while silencing
+    // the computer's own speakers (Windows). Capture stops (and the host unmutes) as soon
+    // as no phone is listening.
+    let hostMuted = false;
+    let audioCapture = null; // { promise, muted }
+
+    async function acquireAudio(muted) {
+      const mode = await window.unireHost.setLoopbackMode(muted);
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      stream.getVideoTracks().forEach(track => track.stop());
+      if (!stream.getAudioTracks().length) throw new Error('System audio capture is not supported on this computer');
+      if (muted) socket.emit('host-audio:support', { muteSupported: mode === 'loopbackWithMute' });
+      return stream;
+    }
+
+    function getAudioStream() {
+      if (!audioCapture || audioCapture.muted !== hostMuted) {
+        const previous = audioCapture;
+        audioCapture = { muted: hostMuted, promise: acquireAudio(hostMuted) };
+        const current = audioCapture;
+        current.promise.catch(() => { if (audioCapture === current) audioCapture = null; });
+        if (previous) previous.promise.then(stream => stream.getTracks().forEach(t => t.stop())).catch(() => {});
+      }
+      return audioCapture.promise;
+    }
+
+    function stopAudioCapture() {
+      if (!audioCapture) return;
+      audioCapture.promise.then(stream => stream.getTracks().forEach(t => t.stop())).catch(() => {});
+      audioCapture = null;
+    }
+
+    async function applyHostMute(muted) {
+      hostMuted = Boolean(muted);
+      if (!countPeers('audio')) return;
+      try {
+        const stream = await getAudioStream();
+        for (const peer of peers.values()) {
+          if (peer.kind !== 'audio') continue;
+          const track = stream.getAudioTracks()[0].clone();
+          await peer.sender.replaceTrack(track);
+          peer.tracks.forEach(old => old.stop());
+          peer.tracks = [track];
+        }
+      } catch (err) {
+        socket.emit('host-audio:support', { muteSupported: false });
+      }
+    }
+
+    function tuneOpus(description) {
+      // Stereo, high-bitrate Opus so music and videos sound right on the phone.
+      const sdp = description.sdp.replace(/a=fmtp:(\d+) (.*useinbandfec=1.*)/g,
+        (line, pt, params) => `a=fmtp:${pt} ${params};stereo=1;sprop-stereo=1;maxaveragebitrate=256000`);
+      return { type: description.type, sdp };
+    }
+
+    async function startAudioPeer(viewerId) {
+      const key = peerKey('audio', viewerId);
+      closePeer(viewerId, 'audio');
+      try {
+        const stream = await getAudioStream();
+        const track = stream.getAudioTracks()[0].clone();
+        const pc = new RTCPeerConnection({ iceServers: [] });
+        const transceiver = pc.addTransceiver(track, { direction: 'sendonly', streams: [new MediaStream([track])] });
+        const peer = { pc, kind: 'audio', tracks: [track], sender: transceiver.sender, pendingCandidates: [] };
+        peers.set(key, peer);
+        pc.onicecandidate = (event) => {
+          if (event.candidate) socket.emit('rtc:signal', { to: viewerId, data: { kind: 'audio', candidate: event.candidate } });
+        };
+        pc.onconnectionstatechange = () => {
+          if (['failed', 'closed'].includes(pc.connectionState)) closePeer(viewerId, 'audio');
+        };
+        await pc.setLocalDescription(await pc.createOffer());
+        socket.emit('rtc:signal', { to: viewerId, data: { kind: 'audio', sdp: pc.localDescription } });
+      } catch (err) {
+        closePeer(viewerId, 'audio');
+        socket.emit('rtc:error', { to: viewerId, kind: 'audio', message: err.message || 'Audio capture failed' });
+      }
     }
 
     function preferCodecs(transceiver) {
@@ -117,23 +199,21 @@
       try { transceiver.setCodecPreferences(codecs); } catch {}
     }
 
-    async function startPeer({ viewerId, smooth }) {
+    async function startPeer({ viewerId, smooth, kind }) {
+      if (kind === 'audio') return startAudioPeer(viewerId);
       closePeer(viewerId);
       try {
         const media = await getMedia();
         const video = media.getVideoTracks()[0].clone();
         video.contentHint = smooth ? 'motion' : 'detail';
         const tracks = [video];
-        const audioSource = media.getAudioTracks()[0];
-        if (audioSource) tracks.push(audioSource.clone());
 
         const pc = new RTCPeerConnection({ iceServers: [] });
-        const peer = { pc, tracks, pendingCandidates: [] };
-        peers.set(viewerId, peer);
+        const peer = { pc, kind: 'screen', tracks, pendingCandidates: [] };
+        peers.set(peerKey('screen', viewerId), peer);
         const outgoing = new MediaStream(tracks);
         const videoTransceiver = pc.addTransceiver(video, { direction: 'sendonly', streams: [outgoing] });
         preferCodecs(videoTransceiver);
-        if (tracks[1]) pc.addTransceiver(tracks[1], { direction: 'sendonly', streams: [outgoing] });
 
         pc.onicecandidate = (event) => {
           if (event.candidate) socket.emit('rtc:signal', { to: viewerId, data: { candidate: event.candidate } });
@@ -145,7 +225,7 @@
         await pc.setLocalDescription(await pc.createOffer());
         socket.emit('rtc:signal', {
           to: viewerId,
-          data: { sdp: pc.localDescription, audio: Boolean(tracks[1]) }
+          data: { sdp: pc.localDescription }
         });
 
         const sender = videoTransceiver.sender;
@@ -208,13 +288,16 @@
     socket.on('input:stop', ({ viewerId }) => closeInputPeer(viewerId));
 
     socket.on('rtc:start', startPeer);
-    socket.on('rtc:stop', ({ viewerId }) => closePeer(viewerId));
+    socket.on('rtc:stop', ({ viewerId, kind }) => closePeer(viewerId, kind || 'screen'));
+    socket.on('host-audio:mode', ({ muted }) => applyHostMute(muted));
     socket.on('rtc:signal', async ({ from, data }) => {
-      const peer = peers.get(from);
+      const kind = data?.kind || 'screen';
+      const peer = peers.get(peerKey(kind, from));
       if (!peer || !data) return;
       try {
         if (data.sdp) {
-          await peer.pc.setRemoteDescription(data.sdp);
+          // The sender follows the receiver's Opus parameters, so tune the phone's answer.
+          await peer.pc.setRemoteDescription(kind === 'audio' ? tuneOpus(data.sdp) : data.sdp);
           for (const candidate of peer.pendingCandidates) await peer.pc.addIceCandidate(candidate).catch(() => {});
           peer.pendingCandidates = [];
         } else if (data.candidate) {
@@ -222,8 +305,8 @@
           else peer.pendingCandidates.push(data.candidate);
         }
       } catch (err) {
-        closePeer(from);
-        socket.emit('rtc:error', { to: from, message: 'Could not connect the screen stream' });
+        closePeer(from, kind);
+        socket.emit('rtc:error', { to: from, kind, message: 'Could not connect the stream' });
       }
     });
   </script>

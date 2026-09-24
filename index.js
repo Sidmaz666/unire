@@ -34,6 +34,8 @@ let nativeScreenCapturer = null;
 let screenHost = null;
 let screenHostSocket = null;
 const screenHostWaiters = new Set();
+// "Mute Host Audio": silence the computer's speakers while audio is routed to phones.
+const hostAudio = { muted: false, muteSupported: process.platform === "win32" };
 const SCREEN_FRAME_INTERVAL_MS = 100;
 
 // Basic middlewares
@@ -443,9 +445,15 @@ function registerScreenHost(socket) {
   socket.on("rtc:signal", ({ to, data } = {}) => {
     if (to) io.to(to).emit("rtc:signal", data);
   });
-  socket.on("rtc:error", ({ to, message } = {}) => {
-    if (to) io.to(to).emit("rtc:error", { message });
+  socket.on("rtc:error", ({ to, kind, message } = {}) => {
+    if (to) io.to(to).emit("rtc:error", { kind, message });
   });
+  socket.on("host-audio:support", ({ muteSupported } = {}) => {
+    hostAudio.muteSupported = Boolean(muteSupported);
+    if (!hostAudio.muteSupported) hostAudio.muted = false;
+    io.emit("host-audio:state", hostAudio);
+  });
+  socket.emit("host-audio:mode", { muted: hostAudio.muted });
   socket.on("input:signal", ({ to, data } = {}) => {
     if (to) io.to(to).emit("input:signal", data);
   });
@@ -617,6 +625,32 @@ io.on("connection", (socket) => {
   socket.on("rtc:stop", () => {
     if (screenHostSocket) screenHostSocket.emit("rtc:stop", { viewerId: socket.id });
   });
+
+  // Route the computer's audio to this phone (independent of the screen view).
+  socket.on("audio:start", async (_options, ack) => {
+    const reply = typeof ack === "function" ? ack : () => {};
+    if (!screenHost) return reply({ ok: false, reason: "unsupported" });
+    try {
+      if (!screenHostSocket) screenHost.ensure();
+      const hostSocket = await waitForScreenHost(10000);
+      hostSocket.emit("rtc:start", { viewerId: socket.id, kind: "audio" });
+      reply({ ok: true });
+    } catch {
+      reply({ ok: false, reason: "host unavailable" });
+    }
+  });
+
+  socket.on("audio:stop", () => {
+    if (screenHostSocket) screenHostSocket.emit("rtc:stop", { viewerId: socket.id, kind: "audio" });
+  });
+
+  socket.on("host-audio:mute", (data) => {
+    hostAudio.muted = Boolean(data?.muted) && hostAudio.muteSupported;
+    if (screenHostSocket) screenHostSocket.emit("host-audio:mode", { muted: hostAudio.muted });
+    io.emit("host-audio:state", hostAudio);
+  });
+
+  socket.emit("host-audio:state", hostAudio);
 
   // Low-latency input over WebRTC data channels (signalled through the screen host).
   socket.on("input:start", async (_options, ack) => {
@@ -864,6 +898,7 @@ io.on("connection", (socket) => {
     clearTimeout(resyncTimer);
     if (screenHostSocket) {
       screenHostSocket.emit("rtc:stop", { viewerId: socket.id });
+      screenHostSocket.emit("rtc:stop", { viewerId: socket.id, kind: "audio" });
       screenHostSocket.emit("input:stop", { viewerId: socket.id });
     }
     if (leftMouseButtonDown) {

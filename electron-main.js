@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, desktopCapturer, screen, systemPreferences, ipcMain } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, desktopCapturer, screen, systemPreferences, ipcMain, session } from 'electron';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { randomUUID } from 'crypto';
@@ -21,6 +21,9 @@ const screenHostToken = randomUUID();
 
 let hostWindow = null;
 let hostReady = null;
+// 'loopbackWithMute' captures system audio while silencing the computer's speakers
+// (Windows); plain 'loopback' captures without muting.
+let loopbackMode = 'loopback';
 
 // Desktop size in the units the mouse uses: physical pixels on Windows/Linux, points on macOS.
 function primaryDisplayInfo() {
@@ -237,6 +240,23 @@ app.whenReady().then(async () => {
     ipcMain.on('unire:input', (event, viewerId, message) => {
       if (!hostWindow || event.sender !== hostWindow.webContents) return;
       dispatchRemoteInput(viewerId, message);
+    });
+    ipcMain.handle('unire:loopback-mode', (event, muted) => {
+      if (!hostWindow || event.sender !== hostWindow.webContents) return null;
+      loopbackMode = muted && process.platform === 'win32' ? 'loopbackWithMute' : 'loopback';
+      return loopbackMode;
+    });
+    // System audio for the phone: only the hidden host window may capture it.
+    session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+      const hostFrame = hostWindow && !hostWindow.isDestroyed() ? hostWindow.webContents.mainFrame : null;
+      const fromHost = hostFrame && request.frame &&
+        request.frame.processId === hostFrame.processId && request.frame.routingId === hostFrame.routingId;
+      if (!fromHost) return callback({});
+      try {
+        callback({ video: await findScreenSource(), audio: loopbackMode });
+      } catch {
+        callback({});
+      }
     });
 
     // macOS requires Screen Recording permission; asking early triggers the system prompt.

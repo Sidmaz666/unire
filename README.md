@@ -25,7 +25,8 @@ A cross-platform desktop remote control application that allows you to control y
 - **Keyboard Input**: Full virtual keyboard with special keys and shortcuts support
 - **Cross-Platform Desktop**: Works on Windows, macOS, and Linux
 - **Live Screen View**: Watch and control the desktop from your phone over WebRTC (hardware-encoded video, up to 60 fps), rotated to fill the screen in portrait
-- **Audio to Phone**: Optionally play computer audio on the phone (Windows and supported Linux setups; macOS does not allow system audio capture)
+- **Audio to Phone**: The **Audio** button plays the computer's sound on the phone, with or without the screen view
+- **Mute Host**: Silences the computer's speakers while audio keeps playing on the phone (Windows); the speakers come back as soon as routing stops
 - **Low-Latency Input**: Mouse moves and scrolls use an unordered WebRTC data channel, clicks and keys a reliable one, with Socket.IO as automatic fallback
 - **Session Management**: Secure session-based authentication with 6-hour expiry
 - **System Tray Integration**: Runs in the background with system tray icon
